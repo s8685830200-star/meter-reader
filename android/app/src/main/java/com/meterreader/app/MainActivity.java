@@ -10,6 +10,8 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Register custom gallery plugin
+        registerPlugin(GalleryPlugin.class);
         // Configure WebView for better getUserMedia compatibility (fallback for live scanning)
         try {
             WebView webView = getBridge().getWebView();

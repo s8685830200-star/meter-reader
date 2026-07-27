@@ -1,5 +1,6 @@
 import { Filesystem, Directory } from '@capacitor/filesystem'
 import { captureImageFromCamera, fileToBase64 } from './fileInput'
+import { saveToGallery } from './gallery'
 import { PHOTO_DIRS } from '@/types'
 
 function generatePhotoFileName(userName: string, userNo: string, meterNo: string): string {
@@ -10,15 +11,7 @@ function generatePhotoFileName(userName: string, userNo: string, meterNo: string
 }
 
 /**
- * Generate a temporary file name for photos taken before meter is identified
- */
-function generateTempFileName(): string {
-  return `temp_${Date.now()}.jpg`
-}
-
-/**
  * Capture a photo via <input capture> and return File + base64 data.
- * Used when we need the raw file for barcode scanning AND the base64 for saving.
  */
 export async function capturePhoto(): Promise<{ file: File; base64: string }> {
   const file = await captureImageFromCamera()
@@ -27,13 +20,9 @@ export async function capturePhoto(): Promise<{ file: File; base64: string }> {
 }
 
 /**
- * Save photo data to app private storage (Directory.Data — no permissions needed)
+ * Save photo to app private storage (for export/backup)
  */
-export async function savePhoto(
-  base64Data: string,
-  dirName: string,
-  fileName: string,
-): Promise<string> {
+async function saveToAppStorage(base64Data: string, dirName: string, fileName: string): Promise<string> {
   const savedPath = `${dirName}/${fileName}`
   await Filesystem.writeFile({
     path: savedPath,
@@ -45,7 +34,7 @@ export async function savePhoto(
 }
 
 /**
- * Save a position photo with meter info in the filename
+ * Save position photo: app storage + system gallery album "抄表电表照片"
  */
 export async function savePositionPhoto(
   userName: string,
@@ -54,11 +43,17 @@ export async function savePositionPhoto(
   base64Data: string,
 ): Promise<string> {
   const fileName = generatePhotoFileName(userName, userNo, meterNo)
-  return savePhoto(base64Data, PHOTO_DIRS.POSITION, fileName)
+  // Save to system gallery (Pictures/抄表电表照片/)
+  const now = new Date()
+  const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+  const galleryName = `${userName}_${ts}.jpg`
+  saveToGallery(base64Data, '抄表电表照片', galleryName)
+  // Save to app storage
+  return saveToAppStorage(base64Data, PHOTO_DIRS.POSITION, fileName)
 }
 
 /**
- * Save an environment photo with meter info in the filename
+ * Save environment photo: app storage + system gallery album "抄表现场照片"
  */
 export async function saveEnvironmentPhoto(
   userName: string,
@@ -67,14 +62,15 @@ export async function saveEnvironmentPhoto(
   base64Data: string,
 ): Promise<string> {
   const fileName = generatePhotoFileName(userName, userNo, meterNo)
-  return savePhoto(base64Data, PHOTO_DIRS.ENVIRONMENT, fileName)
+  // Save to system gallery (Pictures/抄表现场照片/)
+  const now = new Date()
+  const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+  const galleryName = `${userName}_${ts}.jpg`
+  saveToGallery(base64Data, '抄表现场照片', galleryName)
+  // Save to app storage
+  return saveToAppStorage(base64Data, PHOTO_DIRS.ENVIRONMENT, fileName)
 }
 
-// Permission stubs — <input capture> delegates to system camera app
-export async function checkCameraPermission(): Promise<boolean> {
-  return true
-}
-
-export async function requestCameraPermission(): Promise<void> {
-  // no-op
-}
+// Permission stubs
+export async function checkCameraPermission(): Promise<boolean> { return true }
+export async function requestCameraPermission(): Promise<void> {}

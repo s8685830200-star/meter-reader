@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { showToast, showConfirmDialog, showLoadingToast, closeToast } from 'vant'
+import { showToast, showConfirmDialog, showLoadingToast, closeToast, showImagePreview } from 'vant'
 import { Share } from '@capacitor/share'
 import { Filesystem, Directory } from '@capacitor/filesystem'
 import { getAllRecords, deleteRecord, clearRecords, getRecordCount } from '@/services/storage'
@@ -11,14 +11,42 @@ const records = ref<MeterRecord[]>([])
 const loading = ref(false)
 const exporting = ref(false)
 const recordCount = ref(0)
+// Cache for loaded photo data URLs
+const photoCache = ref<Record<string, string>>({})
 
 async function loadRecords() {
   loading.value = true
   records.value = await getAllRecords()
   recordCount.value = records.value.length
+  photoCache.value = {}
   loading.value = false
 }
 onMounted(loadRecords)
+
+async function loadPhotoDataUrl(path: string): Promise<string> {
+  if (photoCache.value[path]) return photoCache.value[path]
+  try {
+    const result = await Filesystem.readFile({ path, directory: Directory.Data })
+    const dataUrl = `data:image/jpeg;base64,${result.data}`
+    photoCache.value[path] = dataUrl
+    return dataUrl
+  } catch {
+    return ''
+  }
+}
+
+function viewPhoto(path: string) {
+  if (!path) return
+  showLoadingToast({ message: '加载中...', forbidClick: true, duration: 0 })
+  loadPhotoDataUrl(path).then(dataUrl => {
+    closeToast()
+    if (dataUrl) {
+      showImagePreview({ images: [dataUrl], closeable: true })
+    } else {
+      showToast('照片加载失败')
+    }
+  })
+}
 
 async function exportRecords() {
   if (records.value.length === 0) { showToast('暂无记录'); return }
@@ -26,19 +54,39 @@ async function exportRecords() {
   showLoadingToast({ message: '正在生成...', forbidClick: true, duration: 0 })
   try {
     const buffer = recordsToExcelBuffer(records.value)
-    const reader = new FileReader()
-    reader.onloadend = async () => {
-      const base64 = (reader.result as string).split(',')[1]
-      const timestamp = new Date().toISOString().slice(0, 10)
-      const fileName = `抄表记录_${timestamp}.xlsx`
-      await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Data })
-      closeToast(); showToast('Excel 已生成')
-      const confirmed = await showConfirmDialog({ title: '导出成功', message: `文件 "${fileName}" 已保存，是否分享？`, confirmButtonText: '分享', cancelButtonText: '关闭' })
-      if (confirmed) await Share.share({ title: '抄表记录', files: [fileName] })
+    const blob = new Blob([buffer as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const timestamp = new Date().toISOString().slice(0, 10)
+    const fileName = `抄表记录_${timestamp}.xlsx`
+
+    // Read as base64 and save
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onloadend = () => resolve((reader.result as string).split(',')[1])
+      reader.onerror = () => reject(new Error('read failed'))
+      reader.readAsDataURL(blob)
+    })
+
+    await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Data })
+    closeToast()
+    showToast('Excel 已生成')
+
+    // Direct system share — no confirm dialog
+    try {
+      await Share.share({
+        title: '抄表记录',
+        text: `抄表记录 ${timestamp}`,
+        url: fileName,
+        files: [fileName],
+      })
+    } catch {
+      // User cancelled share — that's fine
     }
-    reader.readAsDataURL(new Blob([buffer as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
-  } catch { closeToast(); showToast('导出失败') }
-  finally { exporting.value = false }
+  } catch {
+    closeToast()
+    showToast('导出失败')
+  } finally {
+    exporting.value = false
+  }
 }
 
 async function handleDelete(record: MeterRecord) {
@@ -64,8 +112,8 @@ function formatTime(iso: string): string {
     <div class="section">
       <van-cell-group inset><van-cell title="抄表记录数" :value="`${recordCount} 条`" /></van-cell-group>
       <div class="record-actions">
-        <van-button type="primary" icon="records" size="large" round :loading="exporting" :disabled="records.length === 0" @click="exportRecords">导出为 Excel</van-button>
-        <van-button v-if="records.length > 0" plain hairline type="danger" icon="delete" size="large" round @click="handleClearAll" class="clear-btn">清空全部记录</van-button>
+        <van-button type="primary" icon="share" size="large" round block :loading="exporting" :disabled="records.length === 0" @click="exportRecords">导出 Excel 并分享</van-button>
+        <van-button v-if="records.length > 0" plain hairline type="danger" icon="delete" size="large" round block @click="handleClearAll" class="clear-btn">清空全部记录</van-button>
       </div>
     </div>
     <div class="section">
@@ -77,10 +125,13 @@ function formatTime(iso: string): string {
               <van-cell :title="record.meterNo" :label="record.userName" :value="formatTime(record.recordTime)" />
               <van-cell title="户号" :value="record.userNo" />
               <van-cell title="台区" :value="record.district" />
-              <van-cell title="电话" :value="record.phone" />
               <van-cell v-if="record.longitude && record.latitude" title="GPS" :value="`${record.latitude.toFixed(6)}, ${record.longitude.toFixed(6)}`" />
-              <van-cell v-if="record.positionPhotoPath" title="定位照" :value="record.positionPhotoPath" />
-              <van-cell v-if="record.environmentPhotoPath" title="环境照" :value="record.environmentPhotoPath" />
+              <van-cell v-if="record.positionPhotoPath" title="定位照" is-link @click="viewPhoto(record.positionPhotoPath)" >
+                <template #value><span class="photo-link">点击查看</span></template>
+              </van-cell>
+              <van-cell v-if="record.environmentPhotoPath" title="环境照" is-link @click="viewPhoto(record.environmentPhotoPath)" >
+                <template #value><span class="photo-link">点击查看</span></template>
+              </van-cell>
             </van-cell-group>
             <template #right>
               <van-button square type="danger" text="删除" class="delete-button" @click="handleDelete(record)" />
@@ -104,5 +155,6 @@ function formatTime(iso: string): string {
 .clear-btn { margin-top: 12px; }
 .record-card { margin-bottom: 8px; }
 .delete-button { height: 100%; }
+.photo-link { color: #1989fa; font-size: 13px; }
 .bottom-spacer { height: 60px; }
 </style>
