@@ -33,8 +33,9 @@ public class GalleryPlugin extends Plugin {
             return;
         }
 
+        byte[] imageBytes = null;
         try {
-            byte[] imageBytes = Base64.decode(base64, Base64.DEFAULT);
+            imageBytes = Base64.decode(base64, Base64.DEFAULT);
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 // Android 10+: MediaStore with RELATIVE_PATH for custom albums
@@ -45,7 +46,11 @@ public class GalleryPlugin extends Plugin {
             }
         } catch (Exception e) {
             // Fallback: write to app external files as last resort
-            fallbackSave(imageBytes, album, fileName, call, e);
+            if (imageBytes != null) {
+                fallbackSave(imageBytes, album, fileName, call, e);
+            } else {
+                call.reject("Failed to decode base64: " + e.getMessage());
+            }
         }
     }
 
