@@ -33,13 +33,23 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      # Install Android SDK with explicit platform 35
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-35'
-
-      - name: Accept Android SDK licenses
-        run: yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
+      - name: Setup Android SDK
+        run: |
+          # Install Android command-line tools
+          mkdir -p $HOME/android-sdk/cmdline-tools
+          cd $HOME/android-sdk/cmdline-tools
+          curl -sSLO https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q commandlinetools-linux-11076708_latest.zip
+          mv cmdline-tools latest
+          rm commandlinetools-linux-11076708_latest.zip
+          # Set environment variables
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+          # Accept licenses and install SDK platform 35 + build-tools
+          yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses
+          $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+          # Create local.properties for Gradle
+          echo "sdk.dir=$HOME/android-sdk" > android/local.properties
 
       - run: npm run build
       - run: npx cap sync android
@@ -48,13 +58,12 @@ jobs:
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if ! grep -q 'android.permission.CAMERA' "$MANIFEST"; then
-            echo "==> 注入缺失的权限声明"
             sed -i 's|</manifest>|    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n</manifest>|' "$MANIFEST"
           fi
 
       - name: Build Debug APK
         if: github.event.inputs.build_type != 'release' || github.event_name == 'push'
-        run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+        run: cd android && chmod +x gradlew && ./gradlew assembleDebug --stacktrace
 
       - name: Build Release APK
         if: github.event.inputs.build_type == 'release'
