@@ -58,7 +58,7 @@ async function exportRecords() {
     const timestamp = new Date().toISOString().slice(0, 10)
     const fileName = `抄表记录_${timestamp}.xlsx`
 
-    // Read as base64 and save
+    // Read as base64
     const base64 = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader()
       reader.onloadend = () => resolve((reader.result as string).split(',')[1])
@@ -66,24 +66,25 @@ async function exportRecords() {
       reader.readAsDataURL(blob)
     })
 
-    await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Data })
+    // Save to cache directory for sharing
+    await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Cache })
+    // Get file URI required by Share plugin
+    const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache })
     closeToast()
     showToast('Excel 已生成')
 
-    // Direct system share — no confirm dialog
+    // Direct system share with file URI
     try {
       await Share.share({
         title: '抄表记录',
-        text: `抄表记录 ${timestamp}`,
-        url: fileName,
-        files: [fileName],
+        files: [uri],
       })
     } catch {
-      // User cancelled share — that's fine
+      // User cancelled — fine
     }
-  } catch {
+  } catch (e: any) {
     closeToast()
-    showToast('导出失败')
+    showToast('导出失败: ' + (e?.message || ''))
   } finally {
     exporting.value = false
   }

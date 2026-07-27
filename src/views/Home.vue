@@ -68,23 +68,26 @@ async function captureMeterPhoto() {
     showToast('电表照已拍摄')
 
     if (barcode) {
-      // Barcode found — auto-populate meter info
+      // Always put barcode in search input
+      searchQuery.value = barcode
+      // Try to auto-match meter
       const meter = await getMeter(barcode)
       if (meter) {
         selectMeter(meter)
         showToast('条码识别成功，已匹配电表')
       } else {
+        // Trigger fuzzy search with the barcode
         const results = await searchMeters(barcode)
         if (results.length > 0) {
           searchResults.value = results
           showSearchResults.value = true
-          showToast('条码已识别，请从匹配结果中选择')
+          showToast('请从匹配结果中选择')
         } else {
-          showToast('未找到该电表，请手动搜索')
+          showToast('未找到该电表，请核对编号后手动搜索')
         }
       }
     } else {
-      showToast('未识别到条码，请手动搜索电表')
+      showToast('未识别到条码，请手动输入编号')
     }
   } catch (e: any) {
     const msg = e?.message || '拍照失败'

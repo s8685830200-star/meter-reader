@@ -10,30 +10,19 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // Register custom gallery plugin
-        registerPlugin(GalleryPlugin.class);
-        // Configure WebView for better getUserMedia compatibility (fallback for live scanning)
+
+        // Register custom plugin as instance (annotation processor only runs
+        // for library modules, not the app module)
+        getBridge().registerPluginInstance(new GalleryPlugin());
+
+        // Configure WebView for getUserMedia compatibility
         try {
             WebView webView = getBridge().getWebView();
             if (webView != null) {
-                // Allow video playback without user gesture — needed for getUserMedia camera stream
                 webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
-                // Enable DOM storage for html5-qrcode
                 webView.getSettings().setDomStorageEnabled(true);
-                // Ensure JavaScript is enabled (should be default)
                 webView.getSettings().setJavaScriptEnabled(true);
             }
         } catch (Exception ignored) {}
-    }
-
-    @Override
-    public void onResume() {
-        super.onResume();
-        // Capacitor's BridgeWebChromeClient handles both:
-        // - onPermissionRequest (getUserMedia for html5-qrcode)
-        // - onShowFileChooser (<input capture> for our photo-based scanner)
-        // Our AndroidManifest declares CAMERA / ACCESS_FINE_LOCATION / ACCESS_COARSE_LOCATION.
-        // Capacitor will prompt the user for these permissions when needed.
-        // No additional native permission handling needed here.
     }
 }
