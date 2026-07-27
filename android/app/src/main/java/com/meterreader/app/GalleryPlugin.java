@@ -2,7 +2,7 @@ package com.meterreader.app;
 
 import android.content.ContentResolver;
 import android.content.ContentValues;
-import android.content.Context;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -15,6 +15,8 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.OutputStream;
 
 @CapacitorPlugin(name = "Gallery")
@@ -34,48 +36,104 @@ public class GalleryPlugin extends Plugin {
         try {
             byte[] imageBytes = Base64.decode(base64, Base64.DEFAULT);
 
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
-            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Android 10+: use RELATIVE_PATH to create custom album
-                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/" + album);
-                values.put(MediaStore.Images.Media.IS_PENDING, 1);
+                // Android 10+: MediaStore with RELATIVE_PATH for custom albums
+                saveViaMediaStore(imageBytes, album, fileName, call);
+            } else {
+                // Android 9 and below: write to external storage directly
+                saveViaExternalStorage(imageBytes, album, fileName, call);
             }
+        } catch (Exception e) {
+            // Fallback: write to app external files as last resort
+            fallbackSave(imageBytes, album, fileName, call, e);
+        }
+    }
 
-            ContentResolver resolver = getContext().getContentResolver();
-            Uri uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+    private void saveViaMediaStore(byte[] imageBytes, String album, String fileName, PluginCall call) throws Exception {
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
+        values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+        values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/" + album);
+        values.put(MediaStore.Images.Media.IS_PENDING, 1);
 
-            if (uri == null) {
-                call.reject("Failed to create MediaStore entry");
-                return;
-            }
+        ContentResolver resolver = getContext().getContentResolver();
+        Uri uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
 
-            OutputStream out = resolver.openOutputStream(uri);
-            if (out == null) {
-                call.reject("Failed to open output stream");
-                return;
-            }
+        if (uri == null) {
+            throw new Exception("MediaStore insert returned null");
+        }
 
-            out.write(imageBytes);
-            out.flush();
-            out.close();
+        OutputStream out = resolver.openOutputStream(uri);
+        if (out == null) {
+            throw new Exception("Failed to open output stream");
+        }
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Mark as complete
-                values.clear();
-                values.put(MediaStore.Images.Media.IS_PENDING, 0);
-                resolver.update(uri, values, null, null);
-            }
+        out.write(imageBytes);
+        out.flush();
+        out.close();
+
+        // Mark as complete — MediaStore will scan automatically on most devices
+        values.clear();
+        values.put(MediaStore.Images.Media.IS_PENDING, 0);
+        resolver.update(uri, values, null, null);
+
+        // Explicitly trigger media scan to ensure gallery picks up the new file
+        MediaScannerConnection.scanFile(
+            getContext(),
+            new String[] { Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_PICTURES + "/" + album + "/" + fileName).getAbsolutePath() },
+            new String[] { "image/jpeg" },
+            null
+        );
+
+        JSObject ret = new JSObject();
+        ret.put("uri", uri.toString());
+        ret.put("path", Environment.DIRECTORY_PICTURES + "/" + album + "/" + fileName);
+        call.resolve(ret);
+    }
+
+    private void saveViaExternalStorage(byte[] imageBytes, String album, String fileName, PluginCall call) throws Exception {
+        File dir = new File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+            album
+        );
+        if (!dir.exists()) dir.mkdirs();
+
+        File file = new File(dir, fileName);
+        FileOutputStream fos = new FileOutputStream(file);
+        fos.write(imageBytes);
+        fos.flush();
+        fos.close();
+
+        // Trigger media scan for older Android
+        MediaScannerConnection.scanFile(
+            getContext(),
+            new String[] { file.getAbsolutePath() },
+            new String[] { "image/jpeg" },
+            null
+        );
+
+        JSObject ret = new JSObject();
+        ret.put("path", file.getAbsolutePath());
+        call.resolve(ret);
+    }
+
+    private void fallbackSave(byte[] imageBytes, String album, String fileName, PluginCall call, Exception originalError) {
+        try {
+            File dir = new File(getContext().getExternalFilesDir(null), album);
+            if (!dir.exists()) dir.mkdirs();
+            File file = new File(dir, fileName);
+            FileOutputStream fos = new FileOutputStream(file);
+            fos.write(imageBytes);
+            fos.flush();
+            fos.close();
 
             JSObject ret = new JSObject();
-            ret.put("uri", uri.toString());
-            ret.put("path", Environment.DIRECTORY_PICTURES + "/" + album + "/" + fileName);
+            ret.put("path", file.getAbsolutePath());
+            ret.put("fallback", true);
             call.resolve(ret);
-
-        } catch (Exception e) {
-            call.reject("Failed to save image: " + e.getMessage(), e);
+        } catch (Exception e2) {
+            call.reject("Save failed: " + originalError.getMessage());
         }
     }
 }

@@ -3,11 +3,41 @@ import { ref, onUnmounted } from 'vue'
 import { showToast, showConfirmDialog } from 'vant'
 import type { Meter, MeterRecord } from '@/types'
 import { getMeter, searchMeters, saveRecord } from '@/services/storage'
-import { savePositionPhoto, saveEnvironmentPhoto } from '@/services/camera'
+import { savePositionPhoto, saveEnvironmentPhoto, capturePhoto } from '@/services/camera'
 import { captureAndScan } from '@/services/scanner'
-import { capturePhoto } from '@/services/camera'
 import { getCurrentPosition, getCurrentPositionCoarse, checkLocationPermission, requestLocationPermission } from '@/services/gps'
 import { cancelCapture } from '@/services/fileInput'
+import { getStoragePrefs, setStoragePrefs, type StorageTarget } from '@/services/storagePrefs'
+
+// --- Storage settings ---
+const storagePrefs = ref(getStoragePrefs())
+const showStorageSettings = ref(false)
+
+function getStorageDisplayText(target: StorageTarget): string {
+  const map: Record<StorageTarget, string> = { gallery: '系统相册', external: '文件管理器', internal: 'App内' }
+  return map[target] || target
+}
+
+async function changePositionStorage() {
+  // Cycle through options
+  const opts: StorageTarget[] = ['external', 'gallery', 'internal']
+  const cur = storagePrefs.value.positionPhoto
+  const idx = opts.indexOf(cur)
+  const next = opts[(idx + 1) % opts.length]
+  setStoragePrefs({ positionPhoto: next })
+  storagePrefs.value = getStoragePrefs()
+  showToast(`电表照片 → ${getStorageDisplayText(next)}`)
+}
+
+async function changeEnvStorage() {
+  const opts: StorageTarget[] = ['external', 'gallery', 'internal']
+  const cur = storagePrefs.value.environmentPhoto
+  const idx = opts.indexOf(cur)
+  const next = opts[(idx + 1) % opts.length]
+  setStoragePrefs({ environmentPhoto: next })
+  storagePrefs.value = getStoragePrefs()
+  showToast(`现场照片 → ${getStorageDisplayText(next)}`)
+}
 
 // --- Search ---
 const searchQuery = ref('')
@@ -23,16 +53,16 @@ const longitude = ref(0)
 const gpsAcquired = ref(false)
 const gpsLoading = ref(false)
 
-// --- Photos (cached in memory until save) ---
+// --- Photos ---
 const positionPhotoBase64 = ref('')
 const environmentPhotoBase64 = ref('')
 const takingPositionPhoto = ref(false)
 const takingEnvironmentPhoto = ref(false)
+const lastSaveInfo = ref('')
 
 // --- Save ---
 const saving = ref(false)
 
-// --- Search handlers ---
 async function onSearchInput(value: string) {
   if (searchTimer) clearTimeout(searchTimer)
   if (!value.trim()) { searchResults.value = []; showSearchResults.value = false; return }
@@ -57,9 +87,9 @@ function clearMeter() {
   showSearchResults.value = false
   latitude.value = 0; longitude.value = 0; gpsAcquired.value = false
   positionPhotoBase64.value = ''; environmentPhotoBase64.value = ''
+  lastSaveInfo.value = ''
 }
 
-// --- Capture: meter barcode + position photo (merged) ---
 async function captureMeterPhoto() {
   takingPositionPhoto.value = true
   try {
@@ -68,22 +98,19 @@ async function captureMeterPhoto() {
     showToast('电表照已拍摄')
 
     if (barcode) {
-      // Always put barcode in search input
       searchQuery.value = barcode
-      // Try to auto-match meter
       const meter = await getMeter(barcode)
       if (meter) {
         selectMeter(meter)
         showToast('条码识别成功，已匹配电表')
       } else {
-        // Trigger fuzzy search with the barcode
         const results = await searchMeters(barcode)
         if (results.length > 0) {
           searchResults.value = results
           showSearchResults.value = true
           showToast('请从匹配结果中选择')
         } else {
-          showToast('未找到该电表，请核对编号后手动搜索')
+          showToast('未找到该电表，请核对编号')
         }
       }
     } else {
@@ -97,7 +124,6 @@ async function captureMeterPhoto() {
   }
 }
 
-// --- Capture: environment photo ---
 async function captureEnvPhoto() {
   takingEnvironmentPhoto.value = true
   try {
@@ -112,7 +138,6 @@ async function captureEnvPhoto() {
   }
 }
 
-// --- GPS ---
 async function acquireGps() {
   gpsLoading.value = true
   try {
@@ -133,11 +158,10 @@ async function acquireGps() {
       const pos = await getCurrentPositionCoarse()
       latitude.value = pos.latitude; longitude.value = pos.longitude; gpsAcquired.value = true
       showToast('已获取粗略位置')
-    } catch { showToast('GPS 定位失败，请检查系统位置服务是否开启') }
+    } catch { showToast('GPS 定位失败') }
   } finally { gpsLoading.value = false }
 }
 
-// --- Save ---
 async function saveMeterRecord() {
   if (!selectedMeter.value) { showToast('请先选择电表'); return }
   if (!positionPhotoBase64.value && !environmentPhotoBase64.value) {
@@ -154,13 +178,17 @@ async function saveMeterRecord() {
     const m = selectedMeter.value
     let posPath = ''
     let envPath = ''
+    const locations: string[] = []
 
-    // Save photos with meter-based filenames
     if (positionPhotoBase64.value) {
-      posPath = await savePositionPhoto(m.userName, m.userNo, m.meterNo, positionPhotoBase64.value)
+      const r = await savePositionPhoto(m.userName, m.userNo, m.meterNo, positionPhotoBase64.value)
+      posPath = r.savedPath
+      locations.push(`电表照 → ${r.displayPath}`)
     }
     if (environmentPhotoBase64.value) {
-      envPath = await saveEnvironmentPhoto(m.userName, m.userNo, m.meterNo, environmentPhotoBase64.value)
+      const r = await saveEnvironmentPhoto(m.userName, m.userNo, m.meterNo, environmentPhotoBase64.value)
+      envPath = r.savedPath
+      locations.push(`现场照 → ${r.displayPath}`)
     }
 
     const record: MeterRecord = {
@@ -178,6 +206,7 @@ async function saveMeterRecord() {
     }
     await saveRecord(record)
     showToast('抄表记录已保存')
+    lastSaveInfo.value = locations.join('\n')
     clearMeter()
   } catch (e: any) {
     showToast(e?.message || '保存失败')
@@ -193,62 +222,43 @@ onUnmounted(() => { cancelCapture(); if (searchTimer) clearTimeout(searchTimer) 
   <div class="home-page">
     <van-sticky><van-nav-bar title="抄表" :border="true" /></van-sticky>
 
-    <!-- ===== 拍摄按钮区 ===== -->
+    <!-- 拍摄按钮 -->
     <div class="section">
       <div class="section-title">现场拍摄</div>
       <div class="capture-actions">
-        <van-button
-          type="primary"
-          icon="photograph"
-          size="large"
-          round
-          block
-          :loading="takingPositionPhoto"
-          @click="captureMeterPhoto"
-        >
+        <van-button type="primary" icon="photograph" size="large" round block :loading="takingPositionPhoto" @click="captureMeterPhoto">
           {{ positionPhotoBase64 ? '✓ 已拍摄电表条码' : '📷 拍摄电表条码' }}
         </van-button>
-        <van-button
-          type="warning"
-          icon="photograph"
-          size="large"
-          round
-          block
-          :loading="takingEnvironmentPhoto"
-          class="capture-btn-spacing"
-          @click="captureEnvPhoto"
-        >
+        <van-button type="warning" icon="photograph" size="large" round block :loading="takingEnvironmentPhoto" class="capture-btn-spacing" @click="captureEnvPhoto">
           {{ environmentPhotoBase64 ? '✓ 已拍摄现场环境' : '📸 拍摄现场环境' }}
         </van-button>
       </div>
-      <div class="capture-hint">
-        点击"拍摄电表条码"自动识别条码和匹配户号
+      <div class="capture-hint">点击"拍摄电表条码"自动识别条码和匹配户号</div>
+    </div>
+
+    <!-- 照片存储位置设置 -->
+    <div class="section">
+      <div class="section-title">照片保存位置</div>
+      <van-cell-group inset>
+        <van-cell title="电表照片" is-link :value="getStorageDisplayText(storagePrefs.positionPhoto)" @click="changePositionStorage" />
+        <van-cell title="现场照片" is-link :value="getStorageDisplayText(storagePrefs.environmentPhoto)" @click="changeEnvStorage" />
+      </van-cell-group>
+      <div v-if="lastSaveInfo" class="save-info">
+        <div class="save-info-title">上次保存位置：</div>
+        <div class="save-info-text">{{ lastSaveInfo }}</div>
       </div>
     </div>
 
-    <!-- ===== 手动搜索区 ===== -->
+    <!-- 手动搜索 -->
     <div class="section">
       <div class="section-title">查找电表</div>
-      <van-search
-        v-model="searchQuery"
-        placeholder="手动输入电表编号查找"
-        :loading="isSearching"
-        @update:model-value="onSearchInput"
-        @clear="searchResults = []; showSearchResults = false"
-      />
+      <van-search v-model="searchQuery" placeholder="手动输入电表编号查找" :loading="isSearching" @update:model-value="onSearchInput" @clear="searchResults = []; showSearchResults = false" />
       <van-cell-group v-if="showSearchResults && searchResults.length > 0" inset>
-        <van-cell
-          v-for="item in searchResults"
-          :key="item.meterNo"
-          :title="item.meterNo"
-          :label="`${item.userName} · ${item.district}`"
-          is-link
-          @click="selectMeter(item)"
-        />
+        <van-cell v-for="item in searchResults" :key="item.meterNo" :title="item.meterNo" :label="`${item.userName} · ${item.district}`" is-link @click="selectMeter(item)" />
       </van-cell-group>
     </div>
 
-    <!-- ===== 电表信息 ===== -->
+    <!-- 电表信息 -->
     <div v-if="selectedMeter" class="section">
       <div class="section-title">
         电表信息 — {{ selectedMeter.userName }}
@@ -263,7 +273,7 @@ onUnmounted(() => { cancelCapture(); if (searchTimer) clearTimeout(searchTimer) 
       </van-cell-group>
     </div>
 
-    <!-- ===== GPS + 保存 ===== -->
+    <!-- GPS + 保存 -->
     <div v-if="selectedMeter" class="section">
       <div class="section-title">完成抄表</div>
       <van-cell-group inset>
@@ -275,17 +285,7 @@ onUnmounted(() => { cancelCapture(); if (searchTimer) clearTimeout(searchTimer) 
         </van-cell>
       </van-cell-group>
       <div class="save-action">
-        <van-button
-          type="success"
-          size="large"
-          round
-          block
-          :loading="saving"
-          icon="records"
-          @click="saveMeterRecord"
-        >
-          保存抄表记录
-        </van-button>
+        <van-button type="success" size="large" round block :loading="saving" icon="records" @click="saveMeterRecord">保存抄表记录</van-button>
       </div>
     </div>
 
@@ -302,5 +302,8 @@ onUnmounted(() => { cancelCapture(); if (searchTimer) clearTimeout(searchTimer) 
 .capture-hint { font-size: 12px; color: #969799; text-align: center; margin-top: 6px; margin-bottom: 8px; }
 .gps-success { color: #07c160; font-size: 12px; }
 .save-action { margin-top: 16px; }
+.save-info { margin-top: 8px; padding: 8px 12px; background: #f7f8fa; border-radius: 6px; font-size: 12px; }
+.save-info-title { color: #323233; font-weight: 600; margin-bottom: 2px; }
+.save-info-text { color: #1989fa; white-space: pre-line; }
 .bottom-spacer { height: 60px; }
 </style>
