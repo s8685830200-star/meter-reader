@@ -1,38 +1,45 @@
 <script setup lang="ts">
-import { ref, onUnmounted, nextTick } from 'vue'
-import { showToast, showConfirmDialog, showLoadingToast, closeToast } from 'vant'
+import { ref, onUnmounted } from 'vue'
+import { showToast, showConfirmDialog } from 'vant'
 import type { Meter, MeterRecord } from '@/types'
 import { getMeter, searchMeters, saveRecord } from '@/services/storage'
-import { takePositionPhoto, takeEnvironmentPhoto } from '@/services/camera'
+import { savePositionPhoto, saveEnvironmentPhoto } from '@/services/camera'
+import { captureAndScan } from '@/services/scanner'
+import { capturePhoto } from '@/services/camera'
 import { getCurrentPosition, getCurrentPositionCoarse, checkLocationPermission, requestLocationPermission } from '@/services/gps'
-import { startScanner, stopScanner } from '@/services/scanner'
 import { cancelCapture } from '@/services/fileInput'
 
+// --- Search ---
 const searchQuery = ref('')
 const searchResults = ref<Meter[]>([])
 const selectedMeter = ref<Meter | null>(null)
 const showSearchResults = ref(false)
 const isSearching = ref(false)
-const scanModeActive = ref(false)
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+// --- GPS ---
 const latitude = ref(0)
 const longitude = ref(0)
 const gpsAcquired = ref(false)
 const gpsLoading = ref(false)
-const positionPhotoPath = ref('')
-const environmentPhotoPath = ref('')
+
+// --- Photos (cached in memory until save) ---
+const positionPhotoBase64 = ref('')
+const environmentPhotoBase64 = ref('')
 const takingPositionPhoto = ref(false)
 const takingEnvironmentPhoto = ref(false)
-const saving = ref(false)
-let searchTimer: ReturnType<typeof setTimeout> | null = null
 
+// --- Save ---
+const saving = ref(false)
+
+// --- Search handlers ---
 async function onSearchInput(value: string) {
   if (searchTimer) clearTimeout(searchTimer)
   if (!value.trim()) { searchResults.value = []; showSearchResults.value = false; return }
   searchTimer = setTimeout(async () => {
     isSearching.value = true
-    const results = await searchMeters(value)
-    searchResults.value = results
-    showSearchResults.value = results.length > 0
+    searchResults.value = await searchMeters(value)
+    showSearchResults.value = searchResults.value.length > 0
     isSearching.value = false
   }, 300)
 }
@@ -41,38 +48,68 @@ function selectMeter(meter: Meter) {
   selectedMeter.value = meter
   showSearchResults.value = false
   searchQuery.value = meter.meterNo
-  latitude.value = 0; longitude.value = 0; gpsAcquired.value = false
-  positionPhotoPath.value = ''; environmentPhotoPath.value = ''
 }
 
-async function startScan() {
-  scanModeActive.value = true
+function clearMeter() {
+  selectedMeter.value = null
+  searchQuery.value = ''
+  searchResults.value = []
+  showSearchResults.value = false
+  latitude.value = 0; longitude.value = 0; gpsAcquired.value = false
+  positionPhotoBase64.value = ''; environmentPhotoBase64.value = ''
+}
+
+// --- Capture: meter barcode + position photo (merged) ---
+async function captureMeterPhoto() {
+  takingPositionPhoto.value = true
   try {
-    await startScanner(
-      async (code: string) => {
-        scanModeActive.value = false
-        searchQuery.value = code
-        const meter = await getMeter(code)
-        if (meter) { selectMeter(meter); showToast('扫码成功') }
-        else {
-          const results = await searchMeters(code)
-          if (results.length > 0) { searchResults.value = results; showSearchResults.value = true; showToast('请从匹配结果中选择') }
-          else showToast('未找到该电表信息')
+    const { barcode, base64 } = await captureAndScan()
+    positionPhotoBase64.value = base64
+    showToast('电表照已拍摄')
+
+    if (barcode) {
+      // Barcode found — auto-populate meter info
+      const meter = await getMeter(barcode)
+      if (meter) {
+        selectMeter(meter)
+        showToast('条码识别成功，已匹配电表')
+      } else {
+        const results = await searchMeters(barcode)
+        if (results.length > 0) {
+          searchResults.value = results
+          showSearchResults.value = true
+          showToast('条码已识别，请从匹配结果中选择')
+        } else {
+          showToast('未找到该电表，请手动搜索')
         }
-      },
-      (err: string) => {
-        scanModeActive.value = false
-        if (err && err !== '用户取消拍照') showToast(err)
-      },
-    )
-  } catch (err: any) {
-    scanModeActive.value = false
-    if (err?.message && err.message !== '用户取消拍照') showToast(err.message)
+      }
+    } else {
+      showToast('未识别到条码，请手动搜索电表')
+    }
+  } catch (e: any) {
+    const msg = e?.message || '拍照失败'
+    if (msg !== '用户取消拍照') showToast(msg)
+  } finally {
+    takingPositionPhoto.value = false
   }
 }
 
-function cancelScan() { cancelCapture(); scanModeActive.value = false }
+// --- Capture: environment photo ---
+async function captureEnvPhoto() {
+  takingEnvironmentPhoto.value = true
+  try {
+    const { base64 } = await capturePhoto()
+    environmentPhotoBase64.value = base64
+    showToast('环境照已拍摄')
+  } catch (e: any) {
+    const msg = e?.message || '拍照失败'
+    if (msg !== '用户取消拍照') showToast(msg)
+  } finally {
+    takingEnvironmentPhoto.value = false
+  }
+}
 
+// --- GPS ---
 async function acquireGps() {
   gpsLoading.value = true
   try {
@@ -97,63 +134,53 @@ async function acquireGps() {
   } finally { gpsLoading.value = false }
 }
 
-async function capturePositionPhoto() {
-  if (!selectedMeter.value) return
-  takingPositionPhoto.value = true
-  try {
-    positionPhotoPath.value = await takePositionPhoto(
-      selectedMeter.value.userName,
-      selectedMeter.value.userNo,
-      selectedMeter.value.meterNo,
-    )
-    showToast('定位照已保存')
-  } catch (e: any) {
-    const msg = e?.message || '拍照失败'
-    if (msg !== '用户取消拍照') showToast(msg)
-  } finally {
-    takingPositionPhoto.value = false
-  }
-}
-
-async function captureEnvironmentPhoto() {
-  if (!selectedMeter.value) return
-  takingEnvironmentPhoto.value = true
-  try {
-    environmentPhotoPath.value = await takeEnvironmentPhoto(
-      selectedMeter.value.userName,
-      selectedMeter.value.userNo,
-      selectedMeter.value.meterNo,
-    )
-    showToast('环境照已保存')
-  } catch (e: any) {
-    const msg = e?.message || '拍照失败'
-    if (msg !== '用户取消拍照') showToast(msg)
-  } finally {
-    takingEnvironmentPhoto.value = false
-  }
-}
-
+// --- Save ---
 async function saveMeterRecord() {
   if (!selectedMeter.value) { showToast('请先选择电表'); return }
+  if (!positionPhotoBase64.value && !environmentPhotoBase64.value) {
+    showToast('请至少拍摄一张照片')
+    return
+  }
   if (!gpsAcquired.value) {
     const confirmed = await showConfirmDialog({ title: '提示', message: '尚未获取 GPS 位置，是否继续保存？' })
     if (!confirmed) return
   }
+
   saving.value = true
   try {
+    const m = selectedMeter.value
+    let posPath = ''
+    let envPath = ''
+
+    // Save photos with meter-based filenames
+    if (positionPhotoBase64.value) {
+      posPath = await savePositionPhoto(m.userName, m.userNo, m.meterNo, positionPhotoBase64.value)
+    }
+    if (environmentPhotoBase64.value) {
+      envPath = await saveEnvironmentPhoto(m.userName, m.userNo, m.meterNo, environmentPhotoBase64.value)
+    }
+
     const record: MeterRecord = {
-      id: Date.now(), meterNo: selectedMeter.value.meterNo, userName: selectedMeter.value.userName,
-      userNo: selectedMeter.value.userNo, district: selectedMeter.value.district, phone: selectedMeter.value.phone,
-      longitude: longitude.value, latitude: latitude.value, positionPhotoPath: positionPhotoPath.value,
-      environmentPhotoPath: environmentPhotoPath.value, recordTime: new Date().toISOString(),
+      id: Date.now(),
+      meterNo: m.meterNo,
+      userName: m.userName,
+      userNo: m.userNo,
+      district: m.district,
+      phone: m.phone,
+      longitude: longitude.value,
+      latitude: latitude.value,
+      positionPhotoPath: posPath,
+      environmentPhotoPath: envPath,
+      recordTime: new Date().toISOString(),
     }
     await saveRecord(record)
     showToast('抄表记录已保存')
-    selectedMeter.value = null; searchQuery.value = ''
-    latitude.value = 0; longitude.value = 0; gpsAcquired.value = false
-    positionPhotoPath.value = ''; environmentPhotoPath.value = ''
-  } catch { showToast('保存失败') }
-  finally { saving.value = false }
+    clearMeter()
+  } catch (e: any) {
+    showToast(e?.message || '保存失败')
+  } finally {
+    saving.value = false
+  }
 }
 
 onUnmounted(() => { cancelCapture(); if (searchTimer) clearTimeout(searchTimer) })
@@ -163,21 +190,67 @@ onUnmounted(() => { cancelCapture(); if (searchTimer) clearTimeout(searchTimer) 
   <div class="home-page">
     <van-sticky><van-nav-bar title="抄表" :border="true" /></van-sticky>
 
+    <!-- ===== 拍摄按钮区 ===== -->
     <div class="section">
-      <div class="section-title">查询电表</div>
-      <div class="scan-action">
-        <van-button type="primary" icon="scan" size="large" round :loading="scanModeActive" @click="startScan">
-          {{ scanModeActive ? '请对准条码拍照' : '扫描电表条码' }}
+      <div class="section-title">现场拍摄</div>
+      <div class="capture-actions">
+        <van-button
+          type="primary"
+          icon="photograph"
+          size="large"
+          round
+          block
+          :loading="takingPositionPhoto"
+          @click="captureMeterPhoto"
+        >
+          {{ positionPhotoBase64 ? '✓ 已拍摄电表条码' : '📷 拍摄电表条码' }}
+        </van-button>
+        <van-button
+          type="warning"
+          icon="photograph"
+          size="large"
+          round
+          block
+          :loading="takingEnvironmentPhoto"
+          class="capture-btn-spacing"
+          @click="captureEnvPhoto"
+        >
+          {{ environmentPhotoBase64 ? '✓ 已拍摄现场环境' : '📸 拍摄现场环境' }}
         </van-button>
       </div>
-      <van-search v-model="searchQuery" placeholder="手动输入电表编号" :loading="isSearching" @update:model-value="onSearchInput" @clear="searchResults = []; showSearchResults = false; selectedMeter = null" />
+      <div class="capture-hint">
+        点击"拍摄电表条码"自动识别条码和匹配户号
+      </div>
+    </div>
+
+    <!-- ===== 手动搜索区 ===== -->
+    <div class="section">
+      <div class="section-title">查找电表</div>
+      <van-search
+        v-model="searchQuery"
+        placeholder="手动输入电表编号查找"
+        :loading="isSearching"
+        @update:model-value="onSearchInput"
+        @clear="searchResults = []; showSearchResults = false"
+      />
       <van-cell-group v-if="showSearchResults && searchResults.length > 0" inset>
-        <van-cell v-for="item in searchResults" :key="item.meterNo" :title="item.meterNo" :label="`${item.userName} · ${item.district}`" is-link @click="selectMeter(item)" />
+        <van-cell
+          v-for="item in searchResults"
+          :key="item.meterNo"
+          :title="item.meterNo"
+          :label="`${item.userName} · ${item.district}`"
+          is-link
+          @click="selectMeter(item)"
+        />
       </van-cell-group>
     </div>
 
+    <!-- ===== 电表信息 ===== -->
     <div v-if="selectedMeter" class="section">
-      <div class="section-title">电表信息</div>
+      <div class="section-title">
+        电表信息 — {{ selectedMeter.userName }}
+        <van-button size="mini" type="default" @click="clearMeter" style="float:right">更换电表</van-button>
+      </div>
       <van-cell-group inset>
         <van-field label="电能表编号" :model-value="selectedMeter.meterNo" readonly />
         <van-field label="户名" :model-value="selectedMeter.userName" readonly />
@@ -187,8 +260,9 @@ onUnmounted(() => { cancelCapture(); if (searchTimer) clearTimeout(searchTimer) 
       </van-cell-group>
     </div>
 
+    <!-- ===== GPS + 保存 ===== -->
     <div v-if="selectedMeter" class="section">
-      <div class="section-title">现场记录</div>
+      <div class="section-title">完成抄表</div>
       <van-cell-group inset>
         <van-cell title="GPS 定位" center>
           <template #value>
@@ -197,14 +271,21 @@ onUnmounted(() => { cancelCapture(); if (searchTimer) clearTimeout(searchTimer) 
           </template>
         </van-cell>
       </van-cell-group>
-      <div class="photo-actions">
-        <van-button type="primary" icon="photograph" :loading="takingPositionPhoto" :disabled="!!positionPhotoPath" block plain hairline @click="capturePositionPhoto">{{ positionPhotoPath ? '✓ 定位照已拍' : '拍摄定位照（电表正面）' }}</van-button>
-        <van-button type="warning" icon="photograph" :loading="takingEnvironmentPhoto" :disabled="!!environmentPhotoPath" block plain hairline @click="captureEnvironmentPhoto" class="photo-btn-spacing">{{ environmentPhotoPath ? '✓ 环境照已拍' : '拍摄环境照（接线/空开）' }}</van-button>
-      </div>
       <div class="save-action">
-        <van-button type="success" size="large" round :loading="saving" :disabled="!selectedMeter" icon="records" @click="saveMeterRecord">保存抄表记录</van-button>
+        <van-button
+          type="success"
+          size="large"
+          round
+          block
+          :loading="saving"
+          icon="records"
+          @click="saveMeterRecord"
+        >
+          保存抄表记录
+        </van-button>
       </div>
     </div>
+
     <div class="bottom-spacer"></div>
   </div>
 </template>
@@ -213,10 +294,10 @@ onUnmounted(() => { cancelCapture(); if (searchTimer) clearTimeout(searchTimer) 
 .home-page { min-height: 100%; padding-bottom: 20px; }
 .section { padding: 12px 16px 0; }
 .section-title { font-size: 14px; font-weight: 600; color: #323233; margin-bottom: 8px; padding-left: 10px; border-left: 3px solid #1989fa; }
-.scan-action { margin-bottom: 8px; }
-.photo-actions { margin-top: 12px; padding: 0 16px; }
-.photo-btn-spacing { margin-top: 8px; }
+.capture-actions { margin-bottom: 4px; }
+.capture-btn-spacing { margin-top: 10px; }
+.capture-hint { font-size: 12px; color: #969799; text-align: center; margin-top: 6px; margin-bottom: 8px; }
 .gps-success { color: #07c160; font-size: 12px; }
-.save-action { margin: 20px 16px 0; }
+.save-action { margin-top: 16px; }
 .bottom-spacer { height: 60px; }
 </style>

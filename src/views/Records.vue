@@ -31,7 +31,7 @@ async function exportRecords() {
       const base64 = (reader.result as string).split(',')[1]
       const timestamp = new Date().toISOString().slice(0, 10)
       const fileName = `抄表记录_${timestamp}.xlsx`
-      await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Documents })
+      await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Data })
       closeToast(); showToast('Excel 已生成')
       const confirmed = await showConfirmDialog({ title: '导出成功', message: `文件 "${fileName}" 已保存，是否分享？`, confirmButtonText: '分享', cancelButtonText: '关闭' })
       if (confirmed) await Share.share({ title: '抄表记录', files: [fileName] })

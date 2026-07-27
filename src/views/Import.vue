@@ -41,7 +41,7 @@ async function downloadTemplate() {
     const reader = new FileReader()
     reader.onloadend = async () => {
       const base64 = (reader.result as string).split(',')[1]
-      await Filesystem.writeFile({ path: '抄表工具模板.xlsx', data: base64, directory: Directory.Documents })
+      await Filesystem.writeFile({ path: '抄表工具模板.xlsx', data: base64, directory: Directory.Data })
       showToast('模板已保存')
     }
     reader.readAsDataURL(blob)

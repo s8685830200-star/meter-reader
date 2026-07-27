@@ -10,62 +10,71 @@ function generatePhotoFileName(userName: string, userNo: string, meterNo: string
 }
 
 /**
- * Use <input type="file" capture="environment"> to take a photo.
- * This bypasses the Capacitor Camera plugin's EXTRA_OUTPUT approach which
- * fails on many Chinese OEM ROMs (MagicOS, MIUI, ColorOS, etc.) where the
- * system camera app ignores the EXTRA_OUTPUT file URI.
+ * Generate a temporary file name for photos taken before meter is identified
  */
-async function takePhotoAndSave(
-  dirName: string,
-  userName: string,
-  userNo: string,
-  meterNo: string,
-): Promise<string> {
-  // 1. Capture image using native camera via file input (most reliable approach)
+function generateTempFileName(): string {
+  return `temp_${Date.now()}.jpg`
+}
+
+/**
+ * Capture a photo via <input capture> and return File + base64 data.
+ * Used when we need the raw file for barcode scanning AND the base64 for saving.
+ */
+export async function capturePhoto(): Promise<{ file: File; base64: string }> {
   const file = await captureImageFromCamera()
+  const base64 = await fileToBase64(file)
+  return { file, base64 }
+}
 
-  // 2. Convert to base64
-  const base64Data = await fileToBase64(file)
-
-  // 3. Save to app Documents directory
-  const fileName = generatePhotoFileName(userName, userNo, meterNo)
+/**
+ * Save photo data to app private storage (Directory.Data — no permissions needed)
+ */
+export async function savePhoto(
+  base64Data: string,
+  dirName: string,
+  fileName: string,
+): Promise<string> {
   const savedPath = `${dirName}/${fileName}`
   await Filesystem.writeFile({
     path: savedPath,
     data: base64Data,
-    directory: Directory.Documents,
+    directory: Directory.Data,
     recursive: true,
   })
-
   return savedPath
 }
 
-export async function takePositionPhoto(
+/**
+ * Save a position photo with meter info in the filename
+ */
+export async function savePositionPhoto(
   userName: string,
   userNo: string,
   meterNo: string,
+  base64Data: string,
 ): Promise<string> {
-  return takePhotoAndSave(PHOTO_DIRS.POSITION, userName, userNo, meterNo)
+  const fileName = generatePhotoFileName(userName, userNo, meterNo)
+  return savePhoto(base64Data, PHOTO_DIRS.POSITION, fileName)
 }
 
-export async function takeEnvironmentPhoto(
+/**
+ * Save an environment photo with meter info in the filename
+ */
+export async function saveEnvironmentPhoto(
   userName: string,
   userNo: string,
   meterNo: string,
+  base64Data: string,
 ): Promise<string> {
-  return takePhotoAndSave(PHOTO_DIRS.ENVIRONMENT, userName, userNo, meterNo)
+  const fileName = generatePhotoFileName(userName, userNo, meterNo)
+  return savePhoto(base64Data, PHOTO_DIRS.ENVIRONMENT, fileName)
 }
 
-// Permission helpers — kept for the Home.vue guard logic
-// Since we now use <input capture> (which delegates camera permission to the
-// system camera app), these are only advisory.
+// Permission stubs — <input capture> delegates to system camera app
 export async function checkCameraPermission(): Promise<boolean> {
-  // With the file input approach, the system camera app handles its own
-  // permissions. Our app doesn't need CAMERA permission for <input capture>.
-  // Return true to skip the Capacitor permission flow.
   return true
 }
 
 export async function requestCameraPermission(): Promise<void> {
-  // No-op: <input capture> doesn't require our app to hold CAMERA permission
+  // no-op
 }
