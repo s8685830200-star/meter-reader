@@ -1,0 +1,58 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: '构建类型'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: npm run build
+      - run: npx cap add android
+      - run: npx cap sync android
+
+      - name: Build Debug APK
+        if: github.event.inputs.build_type != 'release'
+        run: cd android && ./gradlew assembleDebug
+
+      - name: Build Release APK
+        if: github.event.inputs.build_type == 'release'
+        env:
+          KEYSTORE: ${{ secrets.RELEASE_KEYSTORE }}
+          KEYSTORE_PASS: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE" | base64 -d > android/app/release.keystore
+          cd android && ./gradlew assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meter-reader-apk
+          path: android/app/build/outputs/apk/**/*.apk
