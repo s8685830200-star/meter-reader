@@ -3,16 +3,16 @@ import { ref, onUnmounted, nextTick } from 'vue'
 import { showToast, showConfirmDialog, showLoadingToast, closeToast } from 'vant'
 import type { Meter, MeterRecord } from '@/types'
 import { getMeter, searchMeters, saveRecord } from '@/services/storage'
-import { takePositionPhoto, takeEnvironmentPhoto, checkCameraPermission, requestCameraPermission } from '@/services/camera'
+import { takePositionPhoto, takeEnvironmentPhoto } from '@/services/camera'
 import { getCurrentPosition, getCurrentPositionCoarse, checkLocationPermission, requestLocationPermission } from '@/services/gps'
 import { startScanner, stopScanner } from '@/services/scanner'
+import { cancelCapture } from '@/services/fileInput'
 
 const searchQuery = ref('')
 const searchResults = ref<Meter[]>([])
 const selectedMeter = ref<Meter | null>(null)
 const showSearchResults = ref(false)
 const isSearching = ref(false)
-const showScanner = ref(false)
 const scanModeActive = ref(false)
 const latitude = ref(0)
 const longitude = ref(0)
@@ -46,37 +46,45 @@ function selectMeter(meter: Meter) {
 }
 
 async function startScan() {
-  // 先检查相机权限（html5-qrcode 需要 WebView 的 getUserMedia 权限）
-  if (!(await checkCameraPermission())) {
-    await requestCameraPermission()
-    // 权限请求后需要等 WebView 状态更新
-    await new Promise(r => setTimeout(r, 500))
+  scanModeActive.value = true
+  try {
+    await startScanner(
+      async (code: string) => {
+        scanModeActive.value = false
+        searchQuery.value = code
+        const meter = await getMeter(code)
+        if (meter) { selectMeter(meter); showToast('扫码成功') }
+        else {
+          const results = await searchMeters(code)
+          if (results.length > 0) { searchResults.value = results; showSearchResults.value = true; showToast('请从匹配结果中选择') }
+          else showToast('未找到该电表信息')
+        }
+      },
+      (err: string) => {
+        scanModeActive.value = false
+        if (err && err !== '用户取消拍照') showToast(err)
+      },
+    )
+  } catch (err: any) {
+    scanModeActive.value = false
+    if (err?.message && err.message !== '用户取消拍照') showToast(err.message)
   }
-  scanModeActive.value = true; showScanner.value = true
-  // 关键修复：等 Vue 将扫码 DOM 元素渲染出来再启动
-  await nextTick()
-  await startScanner(
-    async (code: string) => {
-      showScanner.value = false; scanModeActive.value = false
-      searchQuery.value = code
-      const meter = await getMeter(code)
-      if (meter) { selectMeter(meter); showToast('扫码成功') }
-      else {
-        const results = await searchMeters(code)
-        if (results.length > 0) { searchResults.value = results; showSearchResults.value = true; showToast('请从匹配结果中选择') }
-        else showToast('未找到该电表信息')
-      }
-    },
-    (e) => { if (e) console.warn(e) },
-  )
 }
 
-function cancelScan() { stopScanner(); showScanner.value = false; scanModeActive.value = false }
+function cancelScan() { cancelCapture(); scanModeActive.value = false }
 
 async function acquireGps() {
   gpsLoading.value = true
   try {
-    if (!(await checkLocationPermission())) await requestLocationPermission()
+    if (!(await checkLocationPermission())) {
+      await requestLocationPermission()
+      await new Promise(r => setTimeout(r, 500))
+      if (!(await checkLocationPermission())) {
+        showToast('请在系统设置中授予定位权限后重试')
+        gpsLoading.value = false
+        return
+      }
+    }
     const pos = await getCurrentPosition(15000)
     latitude.value = pos.latitude; longitude.value = pos.longitude; gpsAcquired.value = true
     showToast('GPS 定位成功')
@@ -85,24 +93,44 @@ async function acquireGps() {
       const pos = await getCurrentPositionCoarse()
       latitude.value = pos.latitude; longitude.value = pos.longitude; gpsAcquired.value = true
       showToast('已获取粗略位置')
-    } catch { showToast('GPS 定位失败') }
+    } catch { showToast('GPS 定位失败，请检查系统位置服务是否开启') }
   } finally { gpsLoading.value = false }
 }
 
 async function capturePositionPhoto() {
   if (!selectedMeter.value) return
   takingPositionPhoto.value = true
-  try { positionPhotoPath.value = await takePositionPhoto(selectedMeter.value.userName, selectedMeter.value.userNo, selectedMeter.value.meterNo); showToast('定位照已保存') }
-  catch { showToast('拍照失败') }
-  finally { takingPositionPhoto.value = false }
+  try {
+    positionPhotoPath.value = await takePositionPhoto(
+      selectedMeter.value.userName,
+      selectedMeter.value.userNo,
+      selectedMeter.value.meterNo,
+    )
+    showToast('定位照已保存')
+  } catch (e: any) {
+    const msg = e?.message || '拍照失败'
+    if (msg !== '用户取消拍照') showToast(msg)
+  } finally {
+    takingPositionPhoto.value = false
+  }
 }
 
 async function captureEnvironmentPhoto() {
   if (!selectedMeter.value) return
   takingEnvironmentPhoto.value = true
-  try { environmentPhotoPath.value = await takeEnvironmentPhoto(selectedMeter.value.userName, selectedMeter.value.userNo, selectedMeter.value.meterNo); showToast('环境照已保存') }
-  catch { showToast('拍照失败') }
-  finally { takingEnvironmentPhoto.value = false }
+  try {
+    environmentPhotoPath.value = await takeEnvironmentPhoto(
+      selectedMeter.value.userName,
+      selectedMeter.value.userNo,
+      selectedMeter.value.meterNo,
+    )
+    showToast('环境照已保存')
+  } catch (e: any) {
+    const msg = e?.message || '拍照失败'
+    if (msg !== '用户取消拍照') showToast(msg)
+  } finally {
+    takingEnvironmentPhoto.value = false
+  }
 }
 
 async function saveMeterRecord() {
@@ -128,7 +156,7 @@ async function saveMeterRecord() {
   finally { saving.value = false }
 }
 
-onUnmounted(() => { if (scanModeActive.value) stopScanner(); if (searchTimer) clearTimeout(searchTimer) })
+onUnmounted(() => { cancelCapture(); if (searchTimer) clearTimeout(searchTimer) })
 </script>
 
 <template>
@@ -137,12 +165,10 @@ onUnmounted(() => { if (scanModeActive.value) stopScanner(); if (searchTimer) cl
 
     <div class="section">
       <div class="section-title">查询电表</div>
-      <div v-if="!showScanner" class="scan-action">
-        <van-button type="primary" icon="scan" size="large" round :loading="scanModeActive" @click="startScan">扫描电表条码</van-button>
-      </div>
-      <div v-if="showScanner" class="scanner-container">
-        <div id="qr-scanner-element" class="scanner-view"></div>
-        <van-button type="default" size="small" @click="cancelScan">取消扫码</van-button>
+      <div class="scan-action">
+        <van-button type="primary" icon="scan" size="large" round :loading="scanModeActive" @click="startScan">
+          {{ scanModeActive ? '请对准条码拍照' : '扫描电表条码' }}
+        </van-button>
       </div>
       <van-search v-model="searchQuery" placeholder="手动输入电表编号" :loading="isSearching" @update:model-value="onSearchInput" @clear="searchResults = []; showSearchResults = false; selectedMeter = null" />
       <van-cell-group v-if="showSearchResults && searchResults.length > 0" inset>
@@ -188,8 +214,6 @@ onUnmounted(() => { if (scanModeActive.value) stopScanner(); if (searchTimer) cl
 .section { padding: 12px 16px 0; }
 .section-title { font-size: 14px; font-weight: 600; color: #323233; margin-bottom: 8px; padding-left: 10px; border-left: 3px solid #1989fa; }
 .scan-action { margin-bottom: 8px; }
-.scanner-container { text-align: center; margin-bottom: 12px; }
-.scanner-view { width: 100%; height: 200px; background: #000; border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
 .photo-actions { margin-top: 12px; padding: 0 16px; }
 .photo-btn-spacing { margin-top: 8px; }
 .gps-success { color: #07c160; font-size: 12px; }
