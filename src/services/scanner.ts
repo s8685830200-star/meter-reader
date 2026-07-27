@@ -5,13 +5,9 @@ let scanner: Html5Qrcode | null = null
 
 export async function startScanner(onResult: (code: string) => void, onError?: (err: string) => void): Promise<void> {
   if (scanner) await stopScanner()
-  let container = document.getElementById(SCANNER_ELEMENT_ID)
+  const container = document.getElementById(SCANNER_ELEMENT_ID)
   if (!container) {
-    const div = document.createElement('div')
-    div.id = SCANNER_ELEMENT_ID
-    div.style.display = 'none'
-    document.body.appendChild(div)
-    container = div
+    throw new Error('扫码元素未就绪，请重试')
   }
   scanner = new Html5Qrcode(SCANNER_ELEMENT_ID)
   try {

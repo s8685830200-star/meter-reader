@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+import { ref, onUnmounted, nextTick } from 'vue'
 import { showToast, showConfirmDialog, showLoadingToast, closeToast } from 'vant'
 import type { Meter, MeterRecord } from '@/types'
 import { getMeter, searchMeters, saveRecord } from '@/services/storage'
-import { takePositionPhoto, takeEnvironmentPhoto } from '@/services/camera'
+import { takePositionPhoto, takeEnvironmentPhoto, checkCameraPermission, requestCameraPermission } from '@/services/camera'
 import { getCurrentPosition, getCurrentPositionCoarse, checkLocationPermission, requestLocationPermission } from '@/services/gps'
 import { startScanner, stopScanner } from '@/services/scanner'
 
@@ -46,7 +46,15 @@ function selectMeter(meter: Meter) {
 }
 
 async function startScan() {
+  // 先检查相机权限（html5-qrcode 需要 WebView 的 getUserMedia 权限）
+  if (!(await checkCameraPermission())) {
+    await requestCameraPermission()
+    // 权限请求后需要等 WebView 状态更新
+    await new Promise(r => setTimeout(r, 500))
+  }
   scanModeActive.value = true; showScanner.value = true
+  // 关键修复：等 Vue 将扫码 DOM 元素渲染出来再启动
+  await nextTick()
   await startScanner(
     async (code: string) => {
       showScanner.value = false; scanModeActive.value = false
