@@ -29,7 +29,12 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      - run: npm ci
+      # npm install instead of npm ci — handles platform-specific optional deps
+      # (lockfile was generated on Windows; esbuild etc differ on Linux)
+      - run: npm install --prefer-offline --no-audit --no-fund
+
+      # Verify critical package installed
+      - run: ls node_modules/.bin/vite && ls node_modules/.bin/cap
 
       - uses: actions/setup-java@v4
         with:
@@ -42,22 +47,14 @@ jobs:
           SDK_ROOT="${HOME}/android-sdk"
           echo "ANDROID_HOME=${SDK_ROOT}" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> $GITHUB_ENV
-
-          # Download cmdline-tools
           mkdir -p "${SDK_ROOT}/cmdline-tools"
           curl -sSLO https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           unzip -qo commandlinetools-linux-11076708_latest.zip -d "${SDK_ROOT}/cmdline-tools"
           mv "${SDK_ROOT}/cmdline-tools/cmdline-tools" "${SDK_ROOT}/cmdline-tools/latest"
           rm commandlinetools-linux-11076708_latest.zip
-
-          # Accept licenses & install SDK 35
           yes | "${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses
           "${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
-
-          # Create local.properties
           echo "sdk.dir=${SDK_ROOT}" > android/local.properties
-          echo "SDK setup done. Installed platforms:"
-          ls "${SDK_ROOT}/platforms/"
 
       - run: npx vite build
       - run: npx cap sync android
