@@ -6,20 +6,17 @@ export interface GalleryPlugin {
     base64: string
     album: string
     fileName: string
-  }): Promise<{ uri: string; path: string }>
+  }): Promise<{ uri: string }>
 }
 
 const Gallery = registerPlugin<GalleryPlugin>('Gallery')
 
-/**
- * Save photo to system gallery album (e.g. Pictures/抄表电表照片/).
- * Falls back to app external storage if MediaStore insert fails.
- */
-export async function saveToGallery(base64: string, album: string, fileName: string): Promise<void> {
+export async function saveToGallery(base64: string, album: string, fileName: string): Promise<boolean> {
   try {
     await Gallery.saveImage({ base64, album, fileName })
+    return true
   } catch {
-    // Fallback: save to accessible location
+    // Fallback: write to app external storage
     try {
       await Filesystem.writeFile({
         path: `${album}/${fileName}`,
@@ -28,8 +25,8 @@ export async function saveToGallery(base64: string, album: string, fileName: str
         recursive: true,
       })
     } catch {
-      // Absolute last resort
-      console.warn('Gallery save failed completely')
+      // silently fail — photo is still in app storage
     }
+    return false
   }
 }

@@ -4,14 +4,12 @@ import { showToast, showConfirmDialog } from 'vant'
 import type { Meter, MeterRecord } from '@/types'
 import { getMeter, searchMeters, saveRecord } from '@/services/storage'
 import { savePositionPhoto, saveEnvironmentPhoto, capturePhoto } from '@/services/camera'
-import { captureAndScan } from '@/services/scanner'
+import { startLiveScan, stopLiveScan } from '@/services/scanner'
 import { getCurrentPosition, getCurrentPositionCoarse, checkLocationPermission, requestLocationPermission } from '@/services/gps'
 import { cancelCapture } from '@/services/fileInput'
 import { getStoragePrefs, setStoragePrefs, type StorageTarget } from '@/services/storagePrefs'
 
-// --- Storage settings ---
 const storagePrefs = ref(getStoragePrefs())
-const showStorageSettings = ref(false)
 
 function getStorageDisplayText(target: StorageTarget): string {
   const map: Record<StorageTarget, string> = { gallery: '系统相册', external: '文件管理器', internal: 'App内' }
@@ -19,24 +17,19 @@ function getStorageDisplayText(target: StorageTarget): string {
 }
 
 async function changePositionStorage() {
-  // Cycle through options
   const opts: StorageTarget[] = ['external', 'gallery', 'internal']
-  const cur = storagePrefs.value.positionPhoto
-  const idx = opts.indexOf(cur)
-  const next = opts[(idx + 1) % opts.length]
-  setStoragePrefs({ positionPhoto: next })
+  const idx = opts.indexOf(storagePrefs.value.positionPhoto)
+  setStoragePrefs({ positionPhoto: opts[(idx + 1) % opts.length] })
   storagePrefs.value = getStoragePrefs()
-  showToast(`电表照片 → ${getStorageDisplayText(next)}`)
+  showToast(`电表照片 → ${getStorageDisplayText(storagePrefs.value.positionPhoto)}`)
 }
 
 async function changeEnvStorage() {
   const opts: StorageTarget[] = ['external', 'gallery', 'internal']
-  const cur = storagePrefs.value.environmentPhoto
-  const idx = opts.indexOf(cur)
-  const next = opts[(idx + 1) % opts.length]
-  setStoragePrefs({ environmentPhoto: next })
+  const idx = opts.indexOf(storagePrefs.value.environmentPhoto)
+  setStoragePrefs({ environmentPhoto: opts[(idx + 1) % opts.length] })
   storagePrefs.value = getStoragePrefs()
-  showToast(`现场照片 → ${getStorageDisplayText(next)}`)
+  showToast(`现场照片 → ${getStorageDisplayText(storagePrefs.value.environmentPhoto)}`)
 }
 
 // --- Search ---
@@ -59,6 +52,7 @@ const environmentPhotoBase64 = ref('')
 const takingPositionPhoto = ref(false)
 const takingEnvironmentPhoto = ref(false)
 const lastSaveInfo = ref('')
+const scanActive = ref(false)
 
 // --- Save ---
 const saving = ref(false)
@@ -90,32 +84,42 @@ function clearMeter() {
   lastSaveInfo.value = ''
 }
 
+// --- Live barcode scan (like WeChat) ---
+async function startScan() {
+  scanActive.value = true
+  try {
+    const barcode = await startLiveScan()
+    searchQuery.value = barcode
+    // Auto-match meter
+    const meter = await getMeter(barcode)
+    if (meter) {
+      selectMeter(meter)
+      showToast('扫码成功，已匹配电表')
+    } else {
+      const results = await searchMeters(barcode)
+      if (results.length > 0) {
+        searchResults.value = results
+        showSearchResults.value = true
+        showToast('请从匹配结果中选择')
+      } else {
+        showToast('未找到该电表，请核对编号')
+      }
+    }
+  } catch (err: any) {
+    const msg = err?.message || '扫码取消'
+    if (msg !== '扫码取消' && msg !== '用户取消拍照') showToast(msg)
+  } finally {
+    scanActive.value = false
+  }
+}
+
+// --- Take meter photo (after meter selected, or for barcode) ---
 async function captureMeterPhoto() {
   takingPositionPhoto.value = true
   try {
-    const { barcode, base64 } = await captureAndScan()
+    const { base64 } = await capturePhoto()
     positionPhotoBase64.value = base64
     showToast('电表照已拍摄')
-
-    if (barcode) {
-      searchQuery.value = barcode
-      const meter = await getMeter(barcode)
-      if (meter) {
-        selectMeter(meter)
-        showToast('条码识别成功，已匹配电表')
-      } else {
-        const results = await searchMeters(barcode)
-        if (results.length > 0) {
-          searchResults.value = results
-          showSearchResults.value = true
-          showToast('请从匹配结果中选择')
-        } else {
-          showToast('未找到该电表，请核对编号')
-        }
-      }
-    } else {
-      showToast('未识别到条码，请手动输入编号')
-    }
   } catch (e: any) {
     const msg = e?.message || '拍照失败'
     if (msg !== '用户取消拍照') showToast(msg)
@@ -193,15 +197,10 @@ async function saveMeterRecord() {
 
     const record: MeterRecord = {
       id: Date.now(),
-      meterNo: m.meterNo,
-      userName: m.userName,
-      userNo: m.userNo,
-      district: m.district,
-      phone: m.phone,
-      longitude: longitude.value,
-      latitude: latitude.value,
-      positionPhotoPath: posPath,
-      environmentPhotoPath: envPath,
+      meterNo: m.meterNo, userName: m.userName, userNo: m.userNo,
+      district: m.district, phone: m.phone,
+      longitude: longitude.value, latitude: latitude.value,
+      positionPhotoPath: posPath, environmentPhotoPath: envPath,
       recordTime: new Date().toISOString(),
     }
     await saveRecord(record)
@@ -215,28 +214,31 @@ async function saveMeterRecord() {
   }
 }
 
-onUnmounted(() => { cancelCapture(); if (searchTimer) clearTimeout(searchTimer) })
+onUnmounted(() => { stopLiveScan(); cancelCapture(); if (searchTimer) clearTimeout(searchTimer) })
 </script>
 
 <template>
   <div class="home-page">
     <van-sticky><van-nav-bar title="抄表" :border="true" /></van-sticky>
 
-    <!-- 拍摄按钮 -->
+    <!-- 扫码 + 拍摄 -->
     <div class="section">
-      <div class="section-title">现场拍摄</div>
+      <div class="section-title">扫码与拍摄</div>
       <div class="capture-actions">
-        <van-button type="primary" icon="photograph" size="large" round block :loading="takingPositionPhoto" @click="captureMeterPhoto">
-          {{ positionPhotoBase64 ? '✓ 已拍摄电表条码' : '📷 拍摄电表条码' }}
+        <van-button type="primary" icon="scan" size="large" round block :loading="scanActive" @click="startScan">
+          {{ scanActive ? '对准条码自动识别...' : '📷 扫描电表条码（实时）' }}
         </van-button>
-        <van-button type="warning" icon="photograph" size="large" round block :loading="takingEnvironmentPhoto" class="capture-btn-spacing" @click="captureEnvPhoto">
+        <van-button type="primary" icon="photograph" size="large" round block plain hairline :loading="takingPositionPhoto" class="capture-btn-spacing" @click="captureMeterPhoto">
+          {{ positionPhotoBase64 ? '✓ 已拍摄电表照片' : '📸 拍摄电表照片' }}
+        </van-button>
+        <van-button type="warning" icon="photograph" size="large" round block plain hairline :loading="takingEnvironmentPhoto" class="capture-btn-spacing" @click="captureEnvPhoto">
           {{ environmentPhotoBase64 ? '✓ 已拍摄现场环境' : '📸 拍摄现场环境' }}
         </van-button>
       </div>
-      <div class="capture-hint">点击"拍摄电表条码"自动识别条码和匹配户号</div>
+      <div class="capture-hint">扫描电表条码：实时识别，自动填入编号</div>
     </div>
 
-    <!-- 照片存储位置设置 -->
+    <!-- 存储位置 -->
     <div class="section">
       <div class="section-title">照片保存位置</div>
       <van-cell-group inset>
