@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
       - run: npm ci
       - uses: actions/setup-java@v4
@@ -34,21 +34,27 @@ jobs:
           java-version: '21'
       - uses: android-actions/setup-android@v3
       - run: npm run build
-      - run: npx cap add android
+      # android/ 目录已在仓库中，不需要 cap add，直接同步前端资源即可
       - run: npx cap sync android
 
-      # Capacitor 插件不会自动声明权限，必须手动注入
-      - name: Inject Android permissions
+      # 确保 AndroidManifest.xml 包含所有必需的权限声明
+      # （仓库中的 AndroidManifest.xml 已有这些声明，此步骤为幂等补齐）
+      - name: Ensure Android permissions
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
-          # 在 </manifest> 前插入所需权限
-          sed -i 's|</manifest>|    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n</manifest>|' "$MANIFEST"
+          # 检查是否已有 CAMERA 权限，没有则注入
+          if ! grep -q 'android.permission.CAMERA' "$MANIFEST"; then
+            echo "==> 注入缺失的权限声明"
+            sed -i 's|</manifest>|    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n</manifest>|' "$MANIFEST"
+          else
+            echo "==> 权限声明已存在，跳过注入"
+          fi
           echo "=== AndroidManifest permissions ==="
-          grep -A1 "uses-permission" "$MANIFEST" || true
+          grep -E "uses-permission|uses-feature|queries" "$MANIFEST" || true
 
       - name: Build Debug APK
-        if: github.event.inputs.build_type != 'release'
-        run: cd android && ./gradlew assembleDebug
+        if: github.event.inputs.build_type != 'release' || github.event_name == 'push'
+        run: cd android && chmod +x gradlew && ./gradlew assembleDebug
 
       - name: Build Release APK
         if: github.event.inputs.build_type == 'release'
@@ -59,7 +65,7 @@ jobs:
           KEY_PASS: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
           echo "$KEYSTORE" | base64 -d > android/app/release.keystore
-          cd android && ./gradlew assembleRelease
+          cd android && chmod +x gradlew && ./gradlew assembleRelease
 
       - uses: actions/upload-artifact@v4
         with:
