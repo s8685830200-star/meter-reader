@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { showToast, showLoadingToast, closeToast } from 'vant'
 import { Filesystem, Directory } from '@capacitor/filesystem'
+import { Share } from '@capacitor/share'
 import { importMeters, getMeterCount } from '@/services/storage'
 import { parseExcelToMeters, generateTemplateBuffer } from '@/services/excel'
 
@@ -28,7 +29,7 @@ async function handleFileSelect(event: Event) {
       importedCount.value = result.success
       showToast(`成功导入 ${result.success} 条`)
     }
-    if (result.errors.length > 0) showToast({ message: `导入完成：成功 ${result.success}，失败 ${result.failed}`, duration: 3000 })
+    if (result.errors.length > 0) showToast({ message: `导入完成：成功${result.success}，失败${result.failed}`, duration: 3000 })
   } catch { showToast('文件读取失败') }
   finally { closeToast(); importing.value = false; input.value = '' }
 }
@@ -41,8 +42,14 @@ async function downloadTemplate() {
     const reader = new FileReader()
     reader.onloadend = async () => {
       const base64 = (reader.result as string).split(',')[1]
-      await Filesystem.writeFile({ path: '抄表工具模板.xlsx', data: base64, directory: Directory.Data })
-      showToast('模板已保存')
+      const fileName = '抄表工具模板.xlsx'
+      await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Cache })
+      const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache })
+      closeToast()
+      showToast('模板已生成')
+      try {
+        await Share.share({ title: '抄表工具模板', files: [uri] })
+      } catch { /* user cancelled */ }
     }
     reader.readAsDataURL(blob)
   } catch { showToast('生成失败') }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
-import { showToast, showConfirmDialog, showDialog } from 'vant'
+import { showToast, showConfirmDialog } from 'vant'
 import type { Meter, MeterRecord } from '@/types'
 import { getMeter, searchMeters, saveRecord } from '@/services/storage'
 import { capturePhoto } from '@/services/camera'
@@ -9,7 +9,6 @@ import { startLiveScan, stopLiveScan } from '@/services/scanner'
 import { getCurrentPosition, getCurrentPositionCoarse, checkLocationPermission, requestLocationPermission } from '@/services/gps'
 import { cancelCapture } from '@/services/fileInput'
 
-// --- Search state ---
 const searchQuery = ref('')
 const searchResults = ref<Meter[]>([])
 const selectedMeter = ref<Meter | null>(null)
@@ -17,16 +16,12 @@ const showSearchResults = ref(false)
 const isSearching = ref(false)
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
-// --- GPS ---
 const latitude = ref(0)
 const longitude = ref(0)
 const gpsAcquired = ref(false)
 const gpsLoading = ref(false)
 
-// --- Scan ---
 const scanActive = ref(false)
-
-// --- Save ---
 const saving = ref(false)
 const lastSaveInfo = ref('')
 
@@ -84,7 +79,6 @@ async function acquireGps() {
   } finally { gpsLoading.value = false }
 }
 
-/** Silent GPS — no toasts, no interactive permission prompt */
 async function acquireGpsSilent(): Promise<boolean> {
   try {
     if (await checkLocationPermission()) {
@@ -100,7 +94,7 @@ async function acquireGpsSilent(): Promise<boolean> {
   } catch { return false }
 }
 
-// ──────── Scan meter barcode → match → auto GPS → confirm save ────────
+// ──────── Scan barcode: match DB, auto GPS, confirm save ────────
 
 async function startScan() {
   scanActive.value = true
@@ -108,9 +102,20 @@ async function startScan() {
     const barcode = await startLiveScan()
     searchQuery.value = barcode
 
-    const meter = await getMeter(barcode)
+    // Try exact match, then strip trailing chars (条码末尾常多出一位)
+    let meter = await getMeter(barcode)
+    if (!meter && barcode.length > 4) {
+      for (let strip = 1; strip <= 3; strip++) {
+        const truncated = barcode.slice(0, -strip)
+        meter = await getMeter(truncated)
+        if (meter) {
+          searchQuery.value = truncated
+          break
+        }
+      }
+    }
+
     if (!meter) {
-      // Try fuzzy search as fallback
       const results = await searchMeters(barcode)
       if (results.length > 0) {
         searchResults.value = results
@@ -122,29 +127,21 @@ async function startScan() {
       return
     }
 
-    // Meter matched — auto-acquire GPS silently
+    // Meter matched - auto GPS
     const gpsOk = await acquireGpsSilent()
     const gpsText = gpsOk
-      ? `${latitude.value.toFixed(6)}, ${longitude.value.toFixed(6)}`
+      ? latitude.value.toFixed(6) + ', ' + longitude.value.toFixed(6)
       : '未获取到'
 
-    // Ask user to confirm save
     const confirmed = await showConfirmDialog({
       title: '保存抄表记录？',
-      message: [
-        `电表编号: ${meter.meterNo}`,
-        `户名: ${meter.userName}`,
-        `户号: ${meter.userNo}`,
-        `台区: ${meter.district}`,
-        `GPS: ${gpsText}`,
-      ].join('\n'),
+      message: '电表编号: ' + meter.meterNo + '\n户名: ' + meter.userName + '\n户号: ' + meter.userNo + '\n台区: ' + meter.district + '\nGPS: ' + gpsText,
       confirmButtonText: '保存',
       cancelButtonText: '取消',
     })
 
     if (!confirmed) return
 
-    // Save record (no photo)
     saving.value = true
     const record: MeterRecord = {
       id: Date.now(),
@@ -157,7 +154,7 @@ async function startScan() {
     }
     await saveRecord(record)
     showToast('抄表记录已保存')
-    lastSaveInfo.value = `${meter.meterNo} · ${meter.userName}`
+    lastSaveInfo.value = meter.meterNo + ' · ' + meter.userName
     clearMeter()
 
   } catch (err: any) {
@@ -169,7 +166,7 @@ async function startScan() {
   }
 }
 
-// ──────── Scene photo → confirm → save to system album ────────
+// ──────── Scene photo: camera -> confirm -> save to album ────────
 
 const takingPhoto = ref(false)
 
@@ -187,7 +184,7 @@ async function captureScenePhoto() {
 
     if (!confirmed) return
 
-    const fileName = `现场_${Date.now()}.jpg`
+    const fileName = '现场_' + Date.now() + '.jpg'
     const ok = await saveToGallery(base64, '抄表现场环境', fileName)
     if (ok) {
       showToast('照片已保存到系统相册')
@@ -225,7 +222,7 @@ async function saveMeterRecord() {
     }
     await saveRecord(record)
     showToast('抄表记录已保存')
-    lastSaveInfo.value = `${m.meterNo} · ${m.userName}`
+    lastSaveInfo.value = m.meterNo + ' · ' + m.userName
     clearMeter()
   } catch (e: any) {
     showToast(e?.message || '保存失败')
@@ -241,7 +238,6 @@ onUnmounted(() => { stopLiveScan(); cancelCapture(); if (searchTimer) clearTimeo
   <div class="home-page">
     <van-sticky><van-nav-bar title="抄表" :border="true" /></van-sticky>
 
-    <!-- 核心操作 -->
     <div class="section">
       <div class="section-title">操作</div>
       <div class="action-buttons">
@@ -250,7 +246,7 @@ onUnmounted(() => { stopLiveScan(); cancelCapture(); if (searchTimer) clearTimeo
           :loading="scanActive"
           @click="startScan"
         >
-          {{ scanActive ? '对准条码自动识别...' : '📲 扫描电表条码' }}
+          {{ scanActive ? '对准条码自动识别...' : '扫描电表条码' }}
         </van-button>
         <van-button
           type="warning" icon="photograph" size="large" round block plain hairline
@@ -258,20 +254,18 @@ onUnmounted(() => { stopLiveScan(); cancelCapture(); if (searchTimer) clearTimeo
           class="btn-spacing"
           @click="captureScenePhoto"
         >
-          📷 拍摄现场照片
+          拍摄现场照片
         </van-button>
       </div>
-      <div class="action-hint">扫描电表条码：自动匹配 → 定位 → 确认保存</div>
+      <div class="action-hint">扫描电表条码：自动匹配 定位 确认保存</div>
     </div>
 
-    <!-- 上次保存信息 -->
     <div v-if="lastSaveInfo" class="section">
       <van-cell-group inset>
         <van-cell title="上次保存" :value="lastSaveInfo" />
       </van-cell-group>
     </div>
 
-    <!-- 手动搜索（备用） -->
     <div class="section">
       <div class="section-title">查找电表</div>
       <van-search
@@ -284,17 +278,16 @@ onUnmounted(() => { stopLiveScan(); cancelCapture(); if (searchTimer) clearTimeo
         <van-cell
           v-for="item in searchResults" :key="item.meterNo"
           :title="item.meterNo"
-          :label="`${item.userName} · ${item.district}`"
+          :label="item.userName + ' · ' + item.district"
           is-link
           @click="selectMeter(item)"
         />
       </van-cell-group>
     </div>
 
-    <!-- 电表信息（手动搜索后展示） -->
     <div v-if="selectedMeter" class="section">
       <div class="section-title">
-        电表信息 — {{ selectedMeter.userName }}
+        电表信息 {{ selectedMeter.userName }}
         <van-button size="mini" type="default" @click="clearMeter" style="float:right">更换</van-button>
       </div>
       <van-cell-group inset>

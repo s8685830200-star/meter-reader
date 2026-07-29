@@ -11,8 +11,11 @@ const records = ref<MeterRecord[]>([])
 const loading = ref(false)
 const exporting = ref(false)
 const recordCount = ref(0)
-// Cache for loaded photo data URLs
 const photoCache = ref<Record<string, string>>({})
+
+// Detail popup
+const showDetail = ref(false)
+const detailRecord = ref<MeterRecord | null>(null)
 
 async function loadRecords() {
   loading.value = true
@@ -22,6 +25,11 @@ async function loadRecords() {
   loading.value = false
 }
 onMounted(loadRecords)
+
+function openDetail(record: MeterRecord) {
+  detailRecord.value = record
+  showDetail.value = true
+}
 
 async function loadPhotoDataUrl(path: string): Promise<string> {
   if (photoCache.value[path]) return photoCache.value[path]
@@ -37,7 +45,7 @@ async function loadPhotoDataUrl(path: string): Promise<string> {
 
 function viewPhoto(path: string) {
   if (!path) return
-  showLoadingToast({ message: '加载中...', forbidClick: true, duration: 0 })
+  showLoadingToast({ message: '加载中..', forbidClick: true, duration: 0 })
   loadPhotoDataUrl(path).then(dataUrl => {
     closeToast()
     if (dataUrl) {
@@ -58,7 +66,6 @@ async function exportRecords() {
     const timestamp = new Date().toISOString().slice(0, 10)
     const fileName = `抄表记录_${timestamp}.xlsx`
 
-    // Read as base64
     const base64 = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader()
       reader.onloadend = () => resolve((reader.result as string).split(',')[1])
@@ -66,22 +73,14 @@ async function exportRecords() {
       reader.readAsDataURL(blob)
     })
 
-    // Save to cache directory for sharing
     await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Cache })
-    // Get file URI required by Share plugin
     const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache })
     closeToast()
     showToast('Excel 已生成')
 
-    // Direct system share with file URI
     try {
-      await Share.share({
-        title: '抄表记录',
-        files: [uri],
-      })
-    } catch {
-      // User cancelled — fine
-    }
+      await Share.share({ title: '抄表记录', files: [uri] })
+    } catch { /* user cancelled */ }
   } catch (e: any) {
     closeToast()
     showToast('导出失败: ' + (e?.message || ''))
@@ -105,11 +104,16 @@ function formatTime(iso: string): string {
   const d = new Date(iso)
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
 }
+
+function shortMeterNo(no: string): string {
+  return no.length > 6 ? '...' + no.slice(-6) : no
+}
 </script>
 
 <template>
   <div class="records-page">
     <van-sticky><van-nav-bar title="抄表记录" :border="true" /></van-sticky>
+
     <div class="section">
       <van-cell-group inset><van-cell title="抄表记录数" :value="`${recordCount} 条`" /></van-cell-group>
       <div class="record-actions">
@@ -117,23 +121,21 @@ function formatTime(iso: string): string {
         <van-button v-if="records.length > 0" plain hairline type="danger" icon="delete" size="large" round block @click="handleClearAll" class="clear-btn">清空全部记录</van-button>
       </div>
     </div>
+
     <div class="section">
       <div class="section-title">记录列表</div>
       <van-pull-refresh v-model="loading" @refresh="loadRecords">
         <van-list v-model:loading="loading" :finished="true" finished-text="没有更多了">
           <van-swipe-cell v-for="record in records" :key="record.id">
-            <van-cell-group inset class="record-card">
-              <van-cell :title="record.meterNo" :label="record.userName" :value="formatTime(record.recordTime)" />
-              <van-cell title="户号" :value="record.userNo" />
-              <van-cell title="台区" :value="record.district" />
-              <van-cell v-if="record.longitude && record.latitude" title="GPS" :value="`${record.latitude.toFixed(6)}, ${record.longitude.toFixed(6)}`" />
-              <van-cell v-if="record.positionPhotoPath" title="定位照" is-link @click="viewPhoto(record.positionPhotoPath)" >
-                <template #value><span class="photo-link">点击查看</span></template>
-              </van-cell>
-              <van-cell v-if="record.environmentPhotoPath" title="环境照" is-link @click="viewPhoto(record.environmentPhotoPath)" >
-                <template #value><span class="photo-link">点击查看</span></template>
-              </van-cell>
-            </van-cell-group>
+            <van-cell
+              center clickable
+              :title="shortMeterNo(record.meterNo)"
+              :label="record.userName"
+              :value="record.userNo"
+              is-link
+              class="record-summary"
+              @click="openDetail(record)"
+            />
             <template #right>
               <van-button square type="danger" text="删除" class="delete-button" @click="handleDelete(record)" />
             </template>
@@ -144,6 +146,51 @@ function formatTime(iso: string): string {
         </van-list>
       </van-pull-refresh>
     </div>
+
+    <!-- 记录详情弹窗 -->
+    <van-popup
+      v-model:show="showDetail"
+      round
+      position="bottom"
+      :style="{ maxHeight: '80vh', overflowY: 'auto' }"
+    >
+      <div v-if="detailRecord" class="detail-popup">
+        <div class="detail-header">
+          <span class="detail-title">记录详情</span>
+          <van-button size="small" plain hairline @click="showDetail = false">关闭</van-button>
+        </div>
+        <van-cell-group inset>
+          <van-field label="电能表编号" :model-value="detailRecord.meterNo" readonly />
+          <van-field label="户名" :model-value="detailRecord.userName" readonly />
+          <van-field label="户号" :model-value="detailRecord.userNo" readonly />
+          <van-field label="台区" :model-value="detailRecord.district" readonly />
+          <van-field label="电话" :model-value="detailRecord.phone" readonly />
+          <van-field
+            v-if="detailRecord.longitude && detailRecord.latitude"
+            label="GPS"
+            :model-value="`${detailRecord.latitude.toFixed(6)}, ${detailRecord.longitude.toFixed(6)}`"
+            readonly
+          />
+          <van-field
+            v-if="detailRecord.positionPhotoPath"
+            label="定位照"
+            is-link
+            :model-value="'点击查看'"
+            @click="viewPhoto(detailRecord!.positionPhotoPath)"
+          />
+          <van-field
+            v-if="detailRecord.environmentPhotoPath"
+            label="环境照"
+            is-link
+            :model-value="'点击查看'"
+            @click="viewPhoto(detailRecord!.environmentPhotoPath)"
+          />
+          <van-field label="记录时间" :model-value="formatTime(detailRecord.recordTime)" readonly />
+        </van-cell-group>
+        <div class="detail-spacer"></div>
+      </div>
+    </van-popup>
+
     <div class="bottom-spacer"></div>
   </div>
 </template>
@@ -154,8 +201,11 @@ function formatTime(iso: string): string {
 .section-title { font-size: 14px; font-weight: 600; color: #323233; margin-bottom: 8px; padding-left: 10px; border-left: 3px solid #1989fa; }
 .record-actions { padding: 16px 0; }
 .clear-btn { margin-top: 12px; }
-.record-card { margin-bottom: 8px; }
+.record-summary { margin-bottom: 2px; }
 .delete-button { height: 100%; }
-.photo-link { color: #1989fa; font-size: 13px; }
+.detail-popup { padding: 16px 0 8px; }
+.detail-header { display: flex; justify-content: space-between; align-items: center; padding: 0 16px 12px; }
+.detail-title { font-size: 16px; font-weight: 600; color: #323233; }
+.detail-spacer { height: 20px; }
 .bottom-spacer { height: 60px; }
 </style>
