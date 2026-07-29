@@ -9,8 +9,8 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        // 必须在 super.onCreate() 之前注册自定义插件，
-        // 因为 BridgeActivity.onCreate() 会初始化桥并加载插件列表
+        // 蹇呴』鍦?super.onCreate() 涔嬪墠娉ㄥ唽鑷畾涔夋彃浠讹紝
+        // 鍥犱负 BridgeActivity.onCreate() 浼氬垵濮嬪寲妗ュ苟鍔犺浇鎻掍欢鍒楄〃
         registerPlugin(GalleryPlugin.class);
 
         super.onCreate(savedInstanceState);
@@ -23,6 +23,7 @@ public class MainActivity extends BridgeActivity {
                 webView.getSettings().setDomStorageEnabled(true);
                 webView.getSettings().setJavaScriptEnabled(true);
                 webView.getSettings().setAllowFileAccess(true);
+                webView.getSettings().setGeolocationEnabled(true);
             }
         } catch (Exception ignored) {}
     }
