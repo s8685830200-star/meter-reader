@@ -9,11 +9,11 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-
-        // Register custom plugin (annotation processor only runs
-        // for library modules, not the app module)
+        // 必须在 super.onCreate() 之前注册自定义插件，
+        // 因为 BridgeActivity.onCreate() 会初始化桥并加载插件列表
         registerPlugin(GalleryPlugin.class);
+
+        super.onCreate(savedInstanceState);
 
         // Configure WebView for getUserMedia compatibility
         try {
