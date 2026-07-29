@@ -1,4 +1,4 @@
-package com.meterreader.app;
+﻿package com.meterreader.app;
 
 import android.os.Bundle;
 import android.webkit.WebView;
@@ -11,9 +11,9 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Register custom plugin as instance (annotation processor only runs
+        // Register custom plugin (annotation processor only runs
         // for library modules, not the app module)
-        getBridge().registerPluginInstance(new GalleryPlugin());
+        registerPlugin(GalleryPlugin.class);
 
         // Configure WebView for getUserMedia compatibility
         try {
@@ -22,6 +22,7 @@ public class MainActivity extends BridgeActivity {
                 webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
                 webView.getSettings().setDomStorageEnabled(true);
                 webView.getSettings().setJavaScriptEnabled(true);
+                webView.getSettings().setAllowFileAccess(true);
             }
         } catch (Exception ignored) {}
     }

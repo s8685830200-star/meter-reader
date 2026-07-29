@@ -1,4 +1,4 @@
-import { Filesystem, Directory } from '@capacitor/filesystem'
+﻿import { Filesystem, Directory } from '@capacitor/filesystem'
 import { captureImageFromCamera, fileToBase64 } from './fileInput'
 import { saveToGallery } from './gallery'
 import { getStoragePrefs, type StorageTarget } from './storagePrefs'
@@ -11,11 +11,6 @@ function generatePhotoFileName(userName: string, userNo: string, meterNo: string
   return `${sn}_${su}_${suffix}.jpg`
 }
 
-function galleryTimestamp(): string {
-  const now = new Date()
-  return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
-}
-
 export async function capturePhoto(): Promise<{ file: File; base64: string }> {
   const file = await captureImageFromCamera()
   const base64 = await fileToBase64(file)
@@ -23,8 +18,11 @@ export async function capturePhoto(): Promise<{ file: File; base64: string }> {
 }
 
 /**
- * Save photo to the appropriate location based on user preference.
- * Returns the saved path (for records) and a display path (for user info).
+ * Save photo to internal storage plus the user's preferred secondary location.
+ *
+ * Internal storage always succeeds (for app-internal viewing/export).
+ * The secondary save (gallery / file-manager) is best-effort and its
+ * outcome is reported through displayPath so the user sees what happened.
  */
 async function savePhotoWithPref(
   base64Data: string,
@@ -36,7 +34,7 @@ async function savePhotoWithPref(
   const prefs = getStoragePrefs()
   const target: StorageTarget = prefs[prefKey]
 
-  // Always save to app internal storage as primary (for records/export)
+  // --- always save to internal app storage (reliable, for Records page) ---
   const savedPath = `${dirName}/${fileName}`
   await Filesystem.writeFile({
     path: savedPath,
@@ -45,31 +43,34 @@ async function savePhotoWithPref(
     recursive: true,
   })
 
-  const galleryName = `${fileName.replace('.jpg', '')}_${galleryTimestamp()}.jpg`
-  let displayPath = '应用内部 (Records页面可查看)'
+  const galleryName = fileName.replace('.jpg', '') + '_' + Date.now() + '.jpg'
 
-  try {
-    if (target === 'gallery') {
-      // Save to system gallery album
-      await saveToGallery(base64Data, galleryAlbum, galleryName)
-      displayPath = `系统图库 → ${galleryAlbum}`
-    } else if (target === 'external') {
-      // Save to app external storage (visible in file manager)
+  // --- secondary save based on user preference ---
+  if (target === 'gallery') {
+    const ok = await saveToGallery(base64Data, galleryAlbum, galleryName)
+    if (ok) {
+      return { savedPath, displayPath: `系统相册 → ${galleryAlbum}` }
+    }
+    return { savedPath, displayPath: '应用内部（保存到系统相册失败，可在 Records 页面查看）' }
+  }
+
+  if (target === 'external') {
+    try {
       await Filesystem.writeFile({
         path: `${galleryAlbum}/${galleryName}`,
         data: base64Data,
         directory: Directory.External,
         recursive: true,
       })
-      displayPath = `文件管理器 → Android/data/com.meterreader.app/files/${galleryAlbum}`
-    } else {
-      displayPath = '应用内部 (Records页面可查看)'
+      const extPath = `Android/data/com.meterreader.app/files/${galleryAlbum}`
+      return { savedPath, displayPath: `文件管理器 → ${extPath}` }
+    } catch {
+      return { savedPath, displayPath: '应用内部（保存到文件管理器失败，可在 Records 页面查看）' }
     }
-  } catch {
-    // Fallback: internal storage always works
   }
 
-  return { savedPath, displayPath }
+  // target === 'internal'
+  return { savedPath, displayPath: '应用内部（Records 页面可查看）' }
 }
 
 export async function savePositionPhoto(

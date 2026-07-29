@@ -1,7 +1,7 @@
-import { registerPlugin } from '@capacitor/core'
+﻿import { registerPlugin } from '@capacitor/core'
 import { Filesystem, Directory } from '@capacitor/filesystem'
 
-export interface GalleryPlugin {
+export interface GalleryPluginDef {
   saveImage(options: {
     base64: string
     album: string
@@ -9,24 +9,18 @@ export interface GalleryPlugin {
   }): Promise<{ uri: string }>
 }
 
-const Gallery = registerPlugin<GalleryPlugin>('Gallery')
+const Gallery = registerPlugin<GalleryPluginDef>('Gallery')
 
+/**
+ * Save image to system gallery via native plugin.
+ * Returns true if saved successfully, false otherwise.
+ */
 export async function saveToGallery(base64: string, album: string, fileName: string): Promise<boolean> {
   try {
-    await Gallery.saveImage({ base64, album, fileName })
-    return true
+    const result = await Gallery.saveImage({ base64, album, fileName })
+    return result?.uri != null
   } catch {
-    // Fallback: write to app external storage
-    try {
-      await Filesystem.writeFile({
-        path: `${album}/${fileName}`,
-        data: base64,
-        directory: Directory.External,
-        recursive: true,
-      })
-    } catch {
-      // silently fail — photo is still in app storage
-    }
+    // Gallery plugin unavailable or failed — return false
     return false
   }
 }
