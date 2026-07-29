@@ -1,4 +1,5 @@
 import { Html5Qrcode } from 'html5-qrcode'
+import { BarcodeScanner } from '@capacitor-mlkit/barcode-scanning'
 
 let activeScanner: Html5Qrcode | null = null
 let scannerContainer: HTMLElement | null = null
@@ -16,22 +17,27 @@ function cleanup() {
 
 /**
  * Start real-time barcode scanning with a live camera preview.
- * Creates a full-screen overlay with a viewfinder. When a barcode is
- * detected, returns the barcode text.
+ * Uses html5-qrcode at a constrained resolution (640x480) for speed.
+ * Falls back to ML Kit native scanner if WebRTC is unavailable.
  */
 export async function startLiveScan(): Promise<string> {
   cleanup()
 
-  // Test camera permission before creating the UI
+  // Try html5-qrcode first (has live preview)
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment' },
-    })
-    stream.getTracks().forEach((t) => t.stop())
-  } catch {
-    throw new Error('无法访问摄像头，请检查相机权限')
+    return await startHtml5Scan()
+  } catch (err: any) {
+    // If WebRTC/UserMedia is not available, fall back to ML Kit
+    if (err?.message?.includes('getUserMedia') || err?.message?.includes('摄像头')) {
+      return await startMlKitScan()
+    }
+    throw err
   }
+}
 
+// ──────── html5-qrcode with preview ────────
+
+async function startHtml5Scan(): Promise<string> {
   const containerId = 'scanner-overlay-' + Date.now()
   const container = document.createElement('div')
   container.id = containerId
@@ -40,12 +46,11 @@ export async function startLiveScan(): Promise<string> {
     'background:#000;display:flex;flex-direction:column;overflow:hidden;',
   ].join('')
 
-  // --- Top bar with close button ---
+  // Top bar
   const topBar = document.createElement('div')
   topBar.style.cssText = [
     'display:flex;justify-content:space-between;align-items:center;',
-    'padding:12px 16px;background:rgba(0,0,0,0.85);z-index:1;',
-    'flex-shrink:0;',
+    'padding:12px 16px;background:rgba(0,0,0,0.85);z-index:1;flex-shrink:0;',
   ].join('')
   const title = document.createElement('span')
   title.textContent = '扫码识别电表'
@@ -60,7 +65,7 @@ export async function startLiveScan(): Promise<string> {
   topBar.appendChild(closeBtn)
   container.appendChild(topBar)
 
-  // --- Camera preview area ---
+  // Camera preview area
   const viewId = containerId + '-view'
   const view = document.createElement('div')
   view.id = viewId
@@ -70,7 +75,7 @@ export async function startLiveScan(): Promise<string> {
   ].join('')
   container.appendChild(view)
 
-  // --- Bottom hint text ---
+  // Hint
   const hint = document.createElement('div')
   hint.textContent = '将条码对准取景框，自动识别'
   hint.style.cssText = [
@@ -106,6 +111,11 @@ export async function startLiveScan(): Promise<string> {
             width: Math.min(vw * 0.75, 360),
             height: Math.min(vw * 0.55, 240),
           }),
+          videoConstraints: {
+            facingMode: 'environment',
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          },
         },
         (decodedText) => done(decodedText),
         () => {},
@@ -116,11 +126,61 @@ export async function startLiveScan(): Promise<string> {
   })
 }
 
-export async function stopLiveScan(): Promise<void> {
-  cleanup()
+// ──────── ML Kit fallback (no preview, but works on more devices) ────────
+
+let mlKitResolve: ((val: string) => void) | null = null
+let mlKitReject: ((err: Error) => void) | null = null
+
+async function startMlKitScan(): Promise<string> {
+  await BarcodeScanner.checkPermissions()
+  await BarcodeScanner.requestPermissions()
+  await BarcodeScanner.removeAllListeners()
+
+  return new Promise<string>(async (resolve, reject) => {
+    let resolved = false
+
+    await BarcodeScanner.addListener('barcodesScanned', (event) => {
+      if (resolved) return
+      const barcode = event.barcodes?.[0]
+      if (barcode?.displayValue) {
+        resolved = true
+        stopMlKitScan()
+        resolve(barcode.displayValue)
+      }
+    })
+
+    await BarcodeScanner.addListener('scanError', (error) => {
+      if (resolved) return
+      resolved = true
+      stopMlKitScan()
+      reject(new Error(error.message || '扫描失败'))
+    })
+
+    try {
+      await BarcodeScanner.startScan()
+    } catch (err: any) {
+      if (!resolved) {
+        resolved = true
+        reject(new Error(err?.message || '无法启动相机扫描'))
+      }
+    }
+  })
 }
 
-// Legacy API compatibility
+async function stopMlKitScan(): Promise<void> {
+  try {
+    await BarcodeScanner.stopScan()
+    await BarcodeScanner.removeAllListeners()
+  } catch {}
+}
+
+// ──────── Public API ────────
+
+export async function stopLiveScan(): Promise<void> {
+  cleanup()
+  await stopMlKitScan()
+}
+
 export async function startScanner(
   onResult: (code: string) => void,
   onError?: (err: string) => void,

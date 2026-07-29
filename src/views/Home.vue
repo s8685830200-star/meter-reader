@@ -25,7 +25,7 @@ const scanActive = ref(false)
 const saving = ref(false)
 const lastSaveInfo = ref('')
 
-// ──────── Manual search ────────
+// Manual search
 
 async function onSearchInput(value: string) {
   if (searchTimer) clearTimeout(searchTimer)
@@ -53,7 +53,7 @@ function clearMeter() {
   lastSaveInfo.value = ''
 }
 
-// ──────── GPS ────────
+// GPS
 
 async function acquireGps() {
   gpsLoading.value = true
@@ -79,22 +79,26 @@ async function acquireGps() {
   } finally { gpsLoading.value = false }
 }
 
+// Silent GPS - requests permission if needed, no toasts
 async function acquireGpsSilent(): Promise<boolean> {
   try {
-    if (await checkLocationPermission()) {
-      const pos = await getCurrentPosition(10000)
-      latitude.value = pos.latitude; longitude.value = pos.longitude; gpsAcquired.value = true
-      return true
+    if (!(await checkLocationPermission())) {
+      await requestLocationPermission()
+      await new Promise(r => setTimeout(r, 500))
     }
-  } catch { /* fall through */ }
-  try {
-    const pos = await getCurrentPositionCoarse()
+    const pos = await getCurrentPosition(10000)
     latitude.value = pos.latitude; longitude.value = pos.longitude; gpsAcquired.value = true
     return true
-  } catch { return false }
+  } catch {
+    try {
+      const pos = await getCurrentPositionCoarse()
+      latitude.value = pos.latitude; longitude.value = pos.longitude; gpsAcquired.value = true
+      return true
+    } catch { return false }
+  }
 }
 
-// ──────── Scan barcode: match DB, auto GPS, confirm save ────────
+// Scan barcode: match DB, auto GPS, confirm save
 
 async function startScan() {
   scanActive.value = true
@@ -102,7 +106,7 @@ async function startScan() {
     const barcode = await startLiveScan()
     searchQuery.value = barcode
 
-    // Try exact match, then strip trailing chars (条码末尾常多出一位)
+    // Try exact match, then strip trailing chars
     let meter = await getMeter(barcode)
     if (!meter && barcode.length > 4) {
       for (let strip = 1; strip <= 3; strip++) {
@@ -127,7 +131,7 @@ async function startScan() {
       return
     }
 
-    // Meter matched - auto GPS
+    // Auto GPS - now requests permission if needed
     const gpsOk = await acquireGpsSilent()
     const gpsText = gpsOk
       ? latitude.value.toFixed(6) + ', ' + longitude.value.toFixed(6)
@@ -154,7 +158,7 @@ async function startScan() {
     }
     await saveRecord(record)
     showToast('抄表记录已保存')
-    lastSaveInfo.value = meter.meterNo + ' · ' + meter.userName
+    lastSaveInfo.value = meter.meterNo + ' / ' + meter.userName
     clearMeter()
 
   } catch (err: any) {
@@ -166,7 +170,7 @@ async function startScan() {
   }
 }
 
-// ──────── Scene photo: camera -> confirm -> save to album ────────
+// Scene photo: camera -> confirm -> save to album
 
 const takingPhoto = ref(false)
 
@@ -199,7 +203,7 @@ async function captureScenePhoto() {
   }
 }
 
-// ──────── Manual save (for search-based flow) ────────
+// Manual save (for search-based flow)
 
 async function saveMeterRecord() {
   if (!selectedMeter.value) { showToast('请先选择电表'); return }
@@ -222,7 +226,7 @@ async function saveMeterRecord() {
     }
     await saveRecord(record)
     showToast('抄表记录已保存')
-    lastSaveInfo.value = m.meterNo + ' · ' + m.userName
+    lastSaveInfo.value = m.meterNo + ' / ' + m.userName
     clearMeter()
   } catch (e: any) {
     showToast(e?.message || '保存失败')
@@ -241,19 +245,10 @@ onUnmounted(() => { stopLiveScan(); cancelCapture(); if (searchTimer) clearTimeo
     <div class="section">
       <div class="section-title">操作</div>
       <div class="action-buttons">
-        <van-button
-          type="primary" icon="scan" size="large" round block
-          :loading="scanActive"
-          @click="startScan"
-        >
+        <van-button type="primary" icon="scan" size="large" round block :loading="scanActive" @click="startScan">
           {{ scanActive ? '对准条码自动识别...' : '扫描电表条码' }}
         </van-button>
-        <van-button
-          type="warning" icon="photograph" size="large" round block plain hairline
-          :loading="takingPhoto"
-          class="btn-spacing"
-          @click="captureScenePhoto"
-        >
+        <van-button type="warning" icon="photograph" size="large" round block plain hairline :loading="takingPhoto" class="btn-spacing" @click="captureScenePhoto">
           拍摄现场照片
         </van-button>
       </div>
@@ -268,20 +263,9 @@ onUnmounted(() => { stopLiveScan(); cancelCapture(); if (searchTimer) clearTimeo
 
     <div class="section">
       <div class="section-title">查找电表</div>
-      <van-search
-        v-model="searchQuery" placeholder="手动输入电表编号查找"
-        :loading="isSearching"
-        @update:model-value="onSearchInput"
-        @clear="searchResults = []; showSearchResults = false"
-      />
+      <van-search v-model="searchQuery" placeholder="手动输入电表编号查找" :loading="isSearching" @update:model-value="onSearchInput" @clear="searchResults = []; showSearchResults = false" />
       <van-cell-group v-if="showSearchResults && searchResults.length > 0" inset>
-        <van-cell
-          v-for="item in searchResults" :key="item.meterNo"
-          :title="item.meterNo"
-          :label="item.userName + ' · ' + item.district"
-          is-link
-          @click="selectMeter(item)"
-        />
+        <van-cell v-for="item in searchResults" :key="item.meterNo" :title="item.meterNo" :label="item.userName + ' . ' + item.district" is-link @click="selectMeter(item)" />
       </van-cell-group>
     </div>
 
@@ -298,13 +282,9 @@ onUnmounted(() => { stopLiveScan(); cancelCapture(); if (searchTimer) clearTimeo
         <van-field label="电话" :model-value="selectedMeter.phone" readonly />
       </van-cell-group>
       <div class="save-row">
-        <van-button v-if="!gpsAcquired" type="primary" size="small" :loading="gpsLoading" @click="acquireGps">
-          获取位置
-        </van-button>
+        <van-button v-if="!gpsAcquired" type="primary" size="small" :loading="gpsLoading" @click="acquireGps">获取位置</van-button>
         <span v-else class="gps-text">{{ latitude.toFixed(6) }}, {{ longitude.toFixed(6) }}</span>
-        <van-button type="success" round :loading="saving" icon="records" @click="saveMeterRecord">
-          保存记录
-        </van-button>
+        <van-button type="success" round :loading="saving" icon="records" @click="saveMeterRecord">保存记录</van-button>
       </div>
     </div>
 
