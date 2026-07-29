@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
-import { showToast, showConfirmDialog } from 'vant'
+import { showToast, showConfirmDialog, showDialog, closeToast } from 'vant'
 import type { Meter, MeterRecord } from '@/types'
 import { getMeter, searchMeters, saveRecord } from '@/services/storage'
 import { capturePhoto } from '@/services/camera'
@@ -126,7 +126,7 @@ async function startScan() {
         showSearchResults.value = true
         showToast('未精确匹配，请从列表中选择')
       } else {
-        showToast('未找到该电表，请核对编号')
+        showDialog({ title: '提示', message: '未找到该电表，请核对编号' }).catch(() => {})
       }
       return
     }
@@ -137,6 +137,7 @@ async function startScan() {
       ? latitude.value.toFixed(6) + ', ' + longitude.value.toFixed(6)
       : '未获取到'
 
+    closeToast()
     const confirmed = await showConfirmDialog({
       title: '保存抄表记录？',
       message: '电表编号: ' + meter.meterNo + '\n户名: ' + meter.userName + '\n户号: ' + meter.userNo + '\n台区: ' + meter.district + '\nGPS: ' + gpsText,
@@ -179,6 +180,7 @@ async function captureScenePhoto() {
   try {
     const { file, base64 } = await capturePhoto()
 
+    closeToast()
     const confirmed = await showConfirmDialog({
       title: '保存照片？',
       message: '将照片保存到系统相册"抄表现场环境"文件夹',
@@ -208,6 +210,7 @@ async function captureScenePhoto() {
 async function saveMeterRecord() {
   if (!selectedMeter.value) { showToast('请先选择电表'); return }
   if (!gpsAcquired.value) {
+    closeToast()
     const confirmed = await showConfirmDialog({ title: '提示', message: '尚未获取 GPS 位置，是否继续保存？' })
     if (!confirmed) return
   }
