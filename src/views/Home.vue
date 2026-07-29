@@ -5,6 +5,7 @@ import type { Meter, MeterRecord } from '@/types'
 import { getMeter, searchMeters, saveRecord } from '@/services/storage'
 import { savePositionPhoto, saveEnvironmentPhoto, capturePhoto } from '@/services/camera'
 import { startLiveScan, stopLiveScan } from '@/services/scanner'
+import type { ScanResult } from '@/services/scanner'
 import { getCurrentPosition, getCurrentPositionCoarse, checkLocationPermission, requestLocationPermission } from '@/services/gps'
 import { cancelCapture } from '@/services/fileInput'
 import { getStoragePrefs, setStoragePrefs, type StorageTarget } from '@/services/storagePrefs'
@@ -84,36 +85,72 @@ function clearMeter() {
   lastSaveInfo.value = ''
 }
 
-// --- Live barcode scan (like WeChat) ---
+/** Silent GPS acquisition — doesn't show toasts or request permissions interactively */
+async function acquireGpsSilent(): Promise<void> {
+  try {
+    if (await checkLocationPermission()) {
+      const pos = await getCurrentPosition(10000)
+      latitude.value = pos.latitude; longitude.value = pos.longitude; gpsAcquired.value = true
+      return
+    }
+  } catch {
+    // fall through to coarse
+  }
+  try {
+    const pos = await getCurrentPositionCoarse()
+    latitude.value = pos.latitude; longitude.value = pos.longitude; gpsAcquired.value = true
+  } catch {
+    // GPS unavailable — save without coordinates
+  }
+}
+
+// --- Scan: auto-capture photo + auto-save when meter matched ---
 async function startScan() {
   scanActive.value = true
   try {
-    const barcode = await startLiveScan()
-    searchQuery.value = barcode
-    // Auto-match meter
-    const meter = await getMeter(barcode)
+    const result: ScanResult = await startLiveScan()
+    searchQuery.value = result.barcode
+
+    const meter = await getMeter(result.barcode)
+    if (meter && result.photoBase64) {
+      // Auto-flow: meter matched + photo captured from scanner frame
+      selectMeter(meter)
+      positionPhotoBase64.value = result.photoBase64
+      showToast('正在获取位置并保存...')
+
+      // Silently acquire GPS
+      await acquireGpsSilent()
+
+      // Auto-save
+      await saveMeterRecord()
+      return
+    }
+
     if (meter) {
+      // Meter matched but no photo (shouldn't happen with new scanner, but handle gracefully)
       selectMeter(meter)
       showToast('扫码成功，已匹配电表')
+      return
+    }
+
+    // No exact match — try fuzzy search
+    const results = await searchMeters(result.barcode)
+    if (results.length > 0) {
+      searchResults.value = results
+      showSearchResults.value = true
+      showToast('请从匹配结果中选择')
     } else {
-      const results = await searchMeters(barcode)
-      if (results.length > 0) {
-        searchResults.value = results
-        showSearchResults.value = true
-        showToast('请从匹配结果中选择')
-      } else {
-        showToast('未找到该电表，请核对编号')
-      }
+      showToast('未找到该电表，请核对编号')
     }
   } catch (err: any) {
     const msg = err?.message || '扫码取消'
-    if (msg !== '扫码取消' && msg !== '用户取消拍照') showToast(msg)
+    if (msg !== '扫码取消' && msg !== '用户取消扫码') showToast(msg)
   } finally {
     scanActive.value = false
   }
 }
 
-// --- Take meter photo (after meter selected, or for barcode) ---
+// --- Manual photo capture (fallback, when using search or for environment photo) ---
 async function captureMeterPhoto() {
   takingPositionPhoto.value = true
   try {
@@ -184,13 +221,17 @@ async function saveMeterRecord() {
     let envPath = ''
     const locations: string[] = []
 
+    // Pass GPS coordinates to embed EXIF data in photos
+    const lat = latitude.value || undefined
+    const lng = longitude.value || undefined
+
     if (positionPhotoBase64.value) {
-      const r = await savePositionPhoto(m.userName, m.userNo, m.meterNo, positionPhotoBase64.value)
+      const r = await savePositionPhoto(m.userName, m.userNo, m.meterNo, positionPhotoBase64.value, lat, lng)
       posPath = r.savedPath
       locations.push(`电表照 → ${r.displayPath}`)
     }
     if (environmentPhotoBase64.value) {
-      const r = await saveEnvironmentPhoto(m.userName, m.userNo, m.meterNo, environmentPhotoBase64.value)
+      const r = await saveEnvironmentPhoto(m.userName, m.userNo, m.meterNo, environmentPhotoBase64.value, lat, lng)
       envPath = r.savedPath
       locations.push(`现场照 → ${r.displayPath}`)
     }
@@ -221,21 +262,21 @@ onUnmounted(() => { stopLiveScan(); cancelCapture(); if (searchTimer) clearTimeo
   <div class="home-page">
     <van-sticky><van-nav-bar title="抄表" :border="true" /></van-sticky>
 
-    <!-- 扫码 + 拍摄 -->
+    <!-- 扫码 + 拍照 -->
     <div class="section">
-      <div class="section-title">扫码与拍摄</div>
+      <div class="section-title">扫码与拍照</div>
       <div class="capture-actions">
         <van-button type="primary" icon="scan" size="large" round block :loading="scanActive" @click="startScan">
-          {{ scanActive ? '对准条码自动识别...' : '📷 扫描电表条码（实时）' }}
+          {{ scanActive ? '对准条码自动识别...' : '📲 扫描电表条码（实时）' }}
         </van-button>
         <van-button type="primary" icon="photograph" size="large" round block plain hairline :loading="takingPositionPhoto" class="capture-btn-spacing" @click="captureMeterPhoto">
-          {{ positionPhotoBase64 ? '✓ 已拍摄电表照片' : '📸 拍摄电表照片' }}
+          {{ positionPhotoBase64 ? '✅ 已拍摄电表照片' : '📷 拍摄电表照片' }}
         </van-button>
         <van-button type="warning" icon="photograph" size="large" round block plain hairline :loading="takingEnvironmentPhoto" class="capture-btn-spacing" @click="captureEnvPhoto">
-          {{ environmentPhotoBase64 ? '✓ 已拍摄现场环境' : '📸 拍摄现场环境' }}
+          {{ environmentPhotoBase64 ? '✅ 已拍摄现场环境' : '📷 拍摄现场环境' }}
         </van-button>
       </div>
-      <div class="capture-hint">扫描电表条码：实时识别，自动填入编号</div>
+      <div class="capture-hint">扫描电表条码：扫码后自动拍照并保存，无需手动操作</div>
     </div>
 
     <!-- 存储位置 -->

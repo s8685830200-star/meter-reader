@@ -2,6 +2,7 @@ import { Filesystem, Directory } from '@capacitor/filesystem'
 import { captureImageFromCamera, fileToBase64 } from './fileInput'
 import { saveToGallery } from './gallery'
 import { getStoragePrefs, type StorageTarget } from './storagePrefs'
+import { embedGpsExif } from './exif'
 import { PHOTO_DIRS } from '@/types'
 
 function generatePhotoFileName(userName: string, userNo: string, meterNo: string): string {
@@ -19,10 +20,7 @@ export async function capturePhoto(): Promise<{ file: File; base64: string }> {
 
 /**
  * Save photo to internal storage plus the user's preferred secondary location.
- *
- * Internal storage always succeeds (for app-internal viewing/export).
- * The secondary save (gallery / file-manager) is best-effort and its
- * outcome is reported through displayPath so the user sees what happened.
+ * If GPS coordinates are provided, embeds them as EXIF data in the JPEG.
  */
 async function savePhotoWithPref(
   base64Data: string,
@@ -30,24 +28,32 @@ async function savePhotoWithPref(
   fileName: string,
   galleryAlbum: string,
   prefKey: 'positionPhoto' | 'environmentPhoto',
+  latitude?: number,
+  longitude?: number,
 ): Promise<{ savedPath: string; displayPath: string }> {
   const prefs = getStoragePrefs()
   const target: StorageTarget = prefs[prefKey]
 
-  // --- always save to internal app storage (reliable, for Records page) ---
+  // Embed GPS EXIF if coordinates available
+  let photoData = base64Data
+  if (latitude != null && longitude != null && latitude !== 0 && longitude !== 0) {
+    photoData = embedGpsExif(base64Data, latitude, longitude)
+  }
+
+  // Always save to internal app storage (reliable, for Records page)
   const savedPath = `${dirName}/${fileName}`
   await Filesystem.writeFile({
     path: savedPath,
-    data: base64Data,
+    data: photoData,
     directory: Directory.Data,
     recursive: true,
   })
 
   const galleryName = fileName.replace('.jpg', '') + '_' + Date.now() + '.jpg'
 
-  // --- secondary save based on user preference ---
+  // Secondary save based on user preference
   if (target === 'gallery') {
-    const ok = await saveToGallery(base64Data, galleryAlbum, galleryName)
+    const ok = await saveToGallery(photoData, galleryAlbum, galleryName)
     if (ok) {
       return { savedPath, displayPath: `系统相册 → ${galleryAlbum}` }
     }
@@ -58,7 +64,7 @@ async function savePhotoWithPref(
     try {
       await Filesystem.writeFile({
         path: `${galleryAlbum}/${galleryName}`,
-        data: base64Data,
+        data: photoData,
         directory: Directory.External,
         recursive: true,
       })
@@ -69,7 +75,6 @@ async function savePhotoWithPref(
     }
   }
 
-  // target === 'internal'
   return { savedPath, displayPath: '应用内部（Records 页面可查看）' }
 }
 
@@ -78,9 +83,14 @@ export async function savePositionPhoto(
   userNo: string,
   meterNo: string,
   base64Data: string,
+  latitude?: number,
+  longitude?: number,
 ): Promise<{ savedPath: string; displayPath: string }> {
   const fileName = generatePhotoFileName(userName, userNo, meterNo)
-  return savePhotoWithPref(base64Data, PHOTO_DIRS.POSITION, fileName, '抄表电表照片', 'positionPhoto')
+  return savePhotoWithPref(
+    base64Data, PHOTO_DIRS.POSITION, fileName, '抄表电表照片', 'positionPhoto',
+    latitude, longitude,
+  )
 }
 
 export async function saveEnvironmentPhoto(
@@ -88,9 +98,14 @@ export async function saveEnvironmentPhoto(
   userNo: string,
   meterNo: string,
   base64Data: string,
+  latitude?: number,
+  longitude?: number,
 ): Promise<{ savedPath: string; displayPath: string }> {
   const fileName = generatePhotoFileName(userName, userNo, meterNo)
-  return savePhotoWithPref(base64Data, PHOTO_DIRS.ENVIRONMENT, fileName, '抄表现场照片', 'environmentPhoto')
+  return savePhotoWithPref(
+    base64Data, PHOTO_DIRS.ENVIRONMENT, fileName, '抄表现场照片', 'environmentPhoto',
+    latitude, longitude,
+  )
 }
 
 export async function checkCameraPermission(): Promise<boolean> { return true }

@@ -1,5 +1,10 @@
 import { Html5Qrcode } from 'html5-qrcode'
 
+export interface ScanResult {
+  barcode: string
+  photoBase64: string
+}
+
 let activeScanner: Html5Qrcode | null = null
 let scannerContainer: HTMLElement | null = null
 
@@ -14,12 +19,29 @@ function cleanup() {
   }
 }
 
+function captureVideoFrame(container: HTMLElement): string {
+  try {
+    const video = container.querySelector('video')
+    if (!video || !video.videoWidth) return ''
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return ''
+    ctx.drawImage(video, 0, 0)
+    return canvas.toDataURL('image/jpeg', 0.8).split(',')[1]
+  } catch {
+    return ''
+  }
+}
+
 /**
  * Start real-time barcode scanning with a live camera preview.
- * Creates a full-screen overlay with a viewfinder that shows what
- * the camera sees. Auto-returns when a supported barcode is detected.
+ * Creates a full-screen overlay with a viewfinder. When a barcode is
+ * detected, captures the current camera frame as a JPEG photo and
+ * returns both the barcode text and the photo base64 data.
  */
-export async function startLiveScan(): Promise<string> {
+export async function startLiveScan(): Promise<ScanResult> {
   cleanup()
 
   // Test camera permission before creating the UI
@@ -82,15 +104,16 @@ export async function startLiveScan(): Promise<string> {
   document.body.appendChild(container)
   scannerContainer = container
 
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<ScanResult>((resolve, reject) => {
     let resolved = false
 
     const done = (val: string | null, err?: Error) => {
       if (resolved) return
       resolved = true
+      const photoBase64 = captureVideoFrame(container)
       cleanup()
       if (err) reject(err)
-      else resolve(val!)
+      else resolve({ barcode: val!, photoBase64 })
     }
 
     closeBtn.onclick = () => done(null, new Error('用户取消扫码'))
@@ -108,9 +131,7 @@ export async function startLiveScan(): Promise<string> {
           }),
         },
         (decodedText) => done(decodedText),
-        () => {
-          /* ignore non-decodable frames */
-        },
+        () => {},
       )
       .catch((err: any) =>
         done(null, new Error(err?.message || '无法启动相机扫码')),
@@ -128,8 +149,8 @@ export async function startScanner(
   onError?: (err: string) => void,
 ): Promise<void> {
   try {
-    const code = await startLiveScan()
-    onResult(code)
+    const result = await startLiveScan()
+    onResult(result.barcode)
   } catch (err: any) {
     if (onError) onError(err?.message || '扫码失败')
   }

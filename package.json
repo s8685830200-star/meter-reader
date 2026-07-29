@@ -20,6 +20,7 @@
     "@capacitor/share": "^7.0.0",
     "html5-qrcode": "^2.3.8",
     "localforage": "^1.10.0",
+    "piexifjs": "^1.0.6",
     "vant": "^4.9.13",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0",
