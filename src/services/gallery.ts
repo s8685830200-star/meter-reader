@@ -1,4 +1,4 @@
-﻿import { registerPlugin } from '@capacitor/core'
+import { registerPlugin } from '@capacitor/core'
 import { Filesystem, Directory } from '@capacitor/filesystem'
 
 export interface GalleryPluginDef {

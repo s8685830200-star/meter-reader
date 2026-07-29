@@ -1,4 +1,4 @@
-﻿import { Html5Qrcode } from 'html5-qrcode'
+import { Html5Qrcode } from 'html5-qrcode'
 
 let activeScanner: Html5Qrcode | null = null
 let scannerContainer: HTMLElement | null = null

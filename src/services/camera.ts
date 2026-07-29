@@ -1,4 +1,4 @@
-﻿import { Filesystem, Directory } from '@capacitor/filesystem'
+import { Filesystem, Directory } from '@capacitor/filesystem'
 import { captureImageFromCamera, fileToBase64 } from './fileInput'
 import { saveToGallery } from './gallery'
 import { getStoragePrefs, type StorageTarget } from './storagePrefs'

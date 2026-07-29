@@ -1,4 +1,4 @@
-﻿package com.meterreader.app;
+package com.meterreader.app;
 
 import android.os.Bundle;
 import android.webkit.WebView;
